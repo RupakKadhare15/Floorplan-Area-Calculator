@@ -1,8 +1,10 @@
 fastapi
 uvicorn
+gunicorn
+python-multipart
 motor
+dnspython
 opencv-python-headless
 numpy
 pillow
-python-multipart
 python-dotenv
