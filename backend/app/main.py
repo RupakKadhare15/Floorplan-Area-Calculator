@@ -33,6 +33,8 @@ CATEGORY_COLORS = {
 class UpdateProjectStateModel(BaseModel):
     masks: Optional[List[dict]] = None
     wall_height: Optional[float] = None
+    window_height: Optional[float] = None
+    door_height: Optional[float] = None
 
 @app.post("/upload")
 async def upload_image(file: UploadFile = File(...)):
