@@ -1,0 +1,62 @@
+Container for the whole App
+.app-viewport {
+  display: flex;
+  height: 100vh;
+  width: 100vw;
+  background-color: #1a1a1b; /* Dark background like design software */
+  overflow: hidden;
+}
+
+/* Glassmorphism Sidebar */
+.sidebar {
+  width: 320px;
+  background: rgba(255, 255, 255, 0.03);
+  backdrop-filter: blur(12px);
+  border-right: 1px solid rgba(255, 255, 255, 0.1);
+  display: flex;
+  flex-direction: column;
+  padding: 24px;
+  color: white;
+  z-index: 10;
+}
+
+/* Main Workspace */
+.workspace {
+  flex: 1;
+  position: relative;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  background: 
+    radial-gradient(circle, #2a2a2b 1px, transparent 1px);
+  background-size: 30px 30px; /* Subtle dot grid */
+}
+
+/* Professional Buttons */
+.btn-primary {
+  background: #3b82f6;
+  color: white;
+  padding: 12px;
+  border-radius: 8px;
+  font-weight: 600;
+  transition: all 0.2s;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.btn-primary:hover {
+  background: #2563eb;
+  transform: translateY(-1px);
+}
+
+.btn-secondary {
+  background: rgba(255, 255, 255, 0.05);
+  color: #94a3b8;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 10px;
+  border-radius: 8px;
+}
