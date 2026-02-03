@@ -24,7 +24,6 @@ app.add_middleware(
 # --- COLOR DEFINITIONS (R, G, B) ---
 CATEGORY_COLORS = {
     "Walls": (0, 0, 255),      # Blue
-    "Ceiling": (255, 0, 0),    # Red
     "Doors": (0, 255, 0),      # Green
     "Windows": (255, 165, 0)   # Orange
 }
@@ -33,6 +32,8 @@ CATEGORY_COLORS = {
 class UpdateProjectStateModel(BaseModel):
     masks: Optional[List[dict]] = None
     wall_height: Optional[float] = None
+    window_height: Optional[float] = None
+    door_height: Optional[float] = None
 
 @app.post("/upload")
 async def upload_image(file: UploadFile = File(...)):
@@ -62,7 +63,7 @@ async def get_project(project_id: str):
         return project
     raise HTTPException(status_code=404, detail="Project not found")
 
-# --- NEW: AUTO-SAVE ENDPOINT (REPLACES update_masks) ---
+# --- AUTO-SAVE ENDPOINT ---
 @app.put("/project/{project_id}/state")
 async def update_project_state(project_id: str, payload: UpdateProjectStateModel):
     update_data = {}
@@ -101,7 +102,7 @@ async def magic_wand(project_id: str, payload: MagicWandModel):
     image_data = base64.b64decode(project["image_data"])
     target_color = CATEGORY_COLORS.get(payload.category, (0, 0, 255))
     
-    # 3. Call Image Processing (Returns 3 values now)
+    # Returns 3 values now (Mask, Area, Length)
     mask_b64, pixel_area, pixel_length = process_magic_wand(
         image_data, 
         payload.x, 
@@ -124,7 +125,7 @@ async def magic_wand(project_id: str, payload: MagicWandModel):
         "mask_image": mask_b64,
         "pixel_area": pixel_area,
         "real_area": real_area,
-        "real_length": real_length, # Send to frontend
+        "real_length": real_length,
         "unit": project.get("unit", "px"),
         "category": payload.category
     }
@@ -138,7 +139,7 @@ async def draw_opening(project_id: str, payload: LineToolModel):
     image_data = base64.b64decode(project["image_data"])
     target_color = CATEGORY_COLORS.get(payload.category, (0, 255, 0))
 
-    # Extract existing Wall masks from DB
+    # Extract existing Wall masks
     wall_masks_bytes = []
     if "masks" in project:
         for m in project["masks"]:
@@ -146,7 +147,7 @@ async def draw_opening(project_id: str, payload: LineToolModel):
                 b64_clean = m["src"].replace("data:image/png;base64,", "")
                 wall_masks_bytes.append(base64.b64decode(b64_clean))
 
-    # Call Image Processing (Returns 3 values now)
+    # Returns 3 values now
     mask_b64, pixel_area, pixel_length = process_linear_opening(
         image_data,
         wall_masks_bytes,
@@ -171,6 +172,7 @@ async def draw_opening(project_id: str, payload: LineToolModel):
         "real_length": real_length,
         "category": payload.category
     }
+
 @app.post("/project/{project_id}/segregate-rooms")
 async def segregate_rooms(project_id: str):
     project = await project_collection.find_one({"_id": ObjectId(project_id)})
@@ -181,7 +183,7 @@ async def segregate_rooms(project_id: str):
     
     # Separate masks into Wall-type and Opening-type
     wall_masks = []
-    opening_masks = [] # Doors and Windows
+    opening_masks = []
     
     if "masks" in project:
         for m in project["masks"]:
