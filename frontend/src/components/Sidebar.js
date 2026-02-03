@@ -7,7 +7,7 @@ const Sidebar = ({
   selectedCategory, setSelectedCategory, 
   handleUndo, handleClear, hasProject,
   projectData, setProjectData,
-  onSplitRooms // <--- New Prop
+  onSplitRooms
 }) => {
 
   const handleFileChange = (e) => {
@@ -43,7 +43,7 @@ const Sidebar = ({
           </label>
         </div>
 
-        {/* CALIBRATION SETTINGS */}
+        {/* CALIBRATION & HEIGHT SETTINGS */}
         {hasProject && mode === 'calibration' && (
           <div className="sidebar-group">
             <label className="section-label">Calibration Settings</label>
@@ -95,15 +95,6 @@ const Sidebar = ({
               <span>Highlight Walls</span>
             </button>
 
-            {/* Ceiling */}
-            <button 
-              className={`main-btn ${selectedCategory === 'Ceiling' && mode === 'drawing' ? 'active-ceiling' : ''}`}
-              onClick={() => selectCat('Ceiling')}
-            >
-              <Maximize size={18} />
-              <span>Highlight Ceiling</span>
-            </button>
-
             {/* Doors */}
             <button 
               className={`main-btn ${selectedCategory === 'Doors' && mode === 'drawing' ? 'active-door' : ''}`}
@@ -135,7 +126,7 @@ const Sidebar = ({
           </div>
         </div>
 
-        {/* 3. ACTIONS (Hidden during segregation to prevent confusion) */}
+        {/* 3. ACTIONS */}
         {mode !== 'segregation' && (
           <div className={`sidebar-group mt-auto ${!hasProject ? "disabled" : ""}`}>
             <label className="section-label">Actions</label>

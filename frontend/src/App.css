@@ -105,7 +105,6 @@ body {
 /* Active States */
 .main-btn.active { background: #eff6ff; color: var(--primary); font-weight: 600; }
 .main-btn.active-wall { background: #eff6ff; color: blue; font-weight: 600; border-color: #bfdbfe; }
-.main-btn.active-ceiling { background: #fef2f2; color: red; font-weight: 600; border-color: #fecaca; }
 .main-btn.active-door { background: #f0fdf4; color: green; font-weight: 600; border-color: #bbf7d0; }
 .main-btn.active-window { background: #fff7ed; color: orange; font-weight: 600; border-color: #fed7aa; }
 
@@ -177,7 +176,6 @@ body {
   margin-bottom: 16px;
 }
 .stat-card.walls { background: #eff6ff; border: 1px solid #dbeafe; }
-.stat-card.ceiling { background: #fef2f2; border: 1px solid #fee2e2; }
 
 .stat-title {
   font-size: 12px;

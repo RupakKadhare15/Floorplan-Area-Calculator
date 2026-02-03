@@ -6,9 +6,11 @@ import axios from 'axios';
 const CanvasBoard = ({ 
   mode, projectId, projectData, setProjectData, 
   activeTool, selectedCategory, masks, setMasks,
-  rooms // <--- New Prop
+  rooms 
 }) => {
-    
+
+    const API_BASE = process.env.REACT_APP_API_URL || "http://localhost:8000";
+
     // --- HELPERS ---
     const cleanBase64 = (data) => {
         if (!data) return null;
@@ -29,31 +31,34 @@ const CanvasBoard = ({
     const [openingLine, setOpeningLine] = useState([]); 
     const [tolerance] = useState(40);
 
-    // Identify if we use Line Tool (Doors/Windows) or Wand
     const isLinearTool = useMemo(() => {
         return ['Doors', 'Windows'].includes(selectedCategory) && activeTool === 'wand';
     }, [selectedCategory, activeTool]);
 
     // --- ERASER LOGIC ---
     const applyEraser = async (pathPoints) => {
-        if (pathPoints.length < 2) return;
+        if (!pathPoints || pathPoints.length < 2) return;
 
         const updatedMasks = await Promise.all(masks.map(async (mask) => {
             if (mask.category !== selectedCategory) return mask;
 
             return new Promise((resolve) => {
                 const img = new Image();
-                img.crossOrigin = "Anonymous";
-                img.src = mask.src;
                 
                 img.onload = () => {
                     const canvas = document.createElement('canvas');
-                    canvas.width = img.width;
-                    canvas.height = img.height;
+                    // Use natural dimensions to ensure 1:1 mapping with the data
+                    canvas.width = img.naturalWidth || img.width;
+                    canvas.height = img.naturalHeight || img.height;
                     const ctx = canvas.getContext('2d');
 
+                    // A. Draw the original mask
                     ctx.drawImage(img, 0, 0);
+                    
+                    // B. Set Composite Mode to "Destination-Out" (Erase)
                     ctx.globalCompositeOperation = 'destination-out';
+                    
+                    // C. Draw the Eraser Path
                     ctx.beginPath();
                     ctx.moveTo(pathPoints[0], pathPoints[1]);
                     for (let i = 2; i < pathPoints.length; i += 2) {
@@ -64,28 +69,48 @@ const CanvasBoard = ({
                     ctx.lineWidth = 20; 
                     ctx.stroke();
 
+                    // D. Reset Composite Mode
                     ctx.globalCompositeOperation = 'source-over'; 
+                    
+                    // E. Recalculate Area (Count remaining pixels)
                     const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
                     const data = imgData.data;
                     let pixelCount = 0;
 
                     for (let i = 3; i < data.length; i += 4) {
-                        if (data[i] > 0) pixelCount++; 
+                        if (data[i] > 0) pixelCount++;
                     }
 
+                    // F. Calculate New Real Area
                     let newRealArea = 0;
-                    if (projectData.scale_factor && projectData.scale_factor > 0) {
+                    if (projectData && projectData.scale_factor && projectData.scale_factor > 0) {
                         newRealArea = pixelCount / Math.pow(projectData.scale_factor, 2);
                     }
                     
+                    // --- FIX: Update Real Length Proportionally ---
+                    // Since Walls use Length for calculation, we must reduce length if area is reduced.
+                    let newRealLength = mask.real_length || 0;
+                    if (mask.area > 0 && newRealArea < mask.area) {
+                        const ratio = newRealArea / mask.area;
+                        newRealLength = newRealLength * ratio;
+                    }
+
+                    // G. Resolve (PRESERVE EXISTING HEIGHT)
                     resolve({
                         ...mask,
                         src: canvas.toDataURL("image/png"),
                         area: newRealArea,
-                        real_length: mask.real_length 
+                        real_length: newRealLength,
+                        height: mask.height // Keep the height specific to this mask
                     });
                 };
-                img.onerror = () => resolve(mask); 
+
+                img.onerror = (err) => {
+                    console.error("Eraser: Image load failed", err);
+                    resolve(mask);
+                };
+
+                img.src = mask.src; 
             });
         }));
 
@@ -94,7 +119,7 @@ const CanvasBoard = ({
 
     // --- MOUSE HANDLERS ---
     const handleMouseDown = (e) => {
-        if (mode === 'segregation') return; // Disable interaction in segregation mode
+        if (mode === 'segregation') return; 
 
         const pos = e.target.getStage().getPointerPosition();
         
@@ -143,7 +168,7 @@ const CanvasBoard = ({
                 const realLen = window.prompt("Enter real length (e.g., 5.0):");
                 if (realLen) {
                     try {
-                        const res = await axios.post(`http://localhost:8000/project/${projectId}/calibrate`, { 
+                        const res = await axios.post(`${API_BASE}/project/${projectId}/calibrate`, { 
                             px_distance: pxDist, 
                             real_length: parseFloat(realLen) 
                         });
@@ -157,22 +182,36 @@ const CanvasBoard = ({
         else if (mode === 'drawing') {
             const pos = e.target.getStage().getPointerPosition();
             
+            // Helper to get height
+            const getSpecificHeight = () => {
+                if (['Windows', 'Doors'].includes(selectedCategory)) {
+                    const h = window.prompt(`Enter height for this ${selectedCategory.slice(0, -1)} (m):`, "2.1");
+                    return parseFloat(h) || 0;
+                }
+                return 0; // Walls don't need per-mask height
+            };
+
             if (activeTool === 'wand') {
                 if (isLinearTool) {
                     const [x1, y1, x2, y2] = openingLine;
                     const dist = Math.sqrt(Math.pow(x2 - x1, 2) + Math.pow(y2 - y1, 2));
                     if (dist > 5) {
                         try {
-                            const res = await axios.post(`http://localhost:8000/project/${projectId}/draw-opening`, {
+                            const res = await axios.post(`${API_BASE}/project/${projectId}/draw-opening`, {
                                 p1: [x1, y1],
                                 p2: [x2, y2],
                                 category: selectedCategory
                             });
+                            
+                            // Ask for height immediately
+                            const itemHeight = getSpecificHeight();
+
                             setMasks([...masks, { 
                                 src: cleanBase64(res.data.mask_image), 
                                 category: res.data.category, 
                                 area: res.data.real_area,
-                                real_length: res.data.real_length
+                                real_length: res.data.real_length,
+                                height: itemHeight // Store height in the mask
                             }]);
                         } catch (err) { console.error("Line tool failed:", err); }
                     }
@@ -180,14 +219,24 @@ const CanvasBoard = ({
                 } 
                 else {
                     try {
-                        const res = await axios.post(`http://localhost:8000/project/${projectId}/magic-wand`, {
+                        const res = await axios.post(`${API_BASE}/project/${projectId}/magic-wand`, {
                             x: Math.round(pos.x), y: Math.round(pos.y), tolerance, category: selectedCategory
                         });
+
+                        // Ask for height immediately if needed
+                        let itemHeight = 0;
+                        // Magic wand for windows/doors is rare given line tool, but we support it
+                        if (['Windows', 'Doors'].includes(selectedCategory)) {
+                             const h = window.prompt(`Enter height for this ${selectedCategory.slice(0, -1)} (m):`, "2.1");
+                             itemHeight = parseFloat(h) || 0;
+                        }
+
                         setMasks([...masks, { 
                             src: cleanBase64(res.data.mask_image), 
                             category: res.data.category, 
                             area: res.data.real_area,
-                            real_length: res.data.real_length
+                            real_length: res.data.real_length,
+                            height: itemHeight // Store height in the mask
                         }]);
                     } catch (err) { console.error("Magic Wand failed:", err); }
                 }
@@ -229,7 +278,6 @@ const CanvasBoard = ({
                                 stroke="white"
                                 strokeWidth={2}
                             />
-                            {/* Duplicate text for sharpness without stroke */}
                             <Text 
                                 x={room.center.x - 25} 
                                 y={room.center.y} 
@@ -247,7 +295,7 @@ const CanvasBoard = ({
                         <SimpleMask key={i} src={mask.src} width={stageWidth} height={stageHeight} />
                     ))}
                     
-                    {/* HELPER LINES (Only if NOT in segregation) */}
+                    {/* HELPER LINES */}
                     {mode !== 'segregation' && (
                         <>
                             {mode === 'calibration' && calibrationLine.length > 0 && 
