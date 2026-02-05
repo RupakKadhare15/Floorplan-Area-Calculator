@@ -47,18 +47,14 @@ const CanvasBoard = ({
                 
                 img.onload = () => {
                     const canvas = document.createElement('canvas');
-                    // Use natural dimensions to ensure 1:1 mapping with the data
                     canvas.width = img.naturalWidth || img.width;
                     canvas.height = img.naturalHeight || img.height;
                     const ctx = canvas.getContext('2d');
 
-                    // A. Draw the original mask
                     ctx.drawImage(img, 0, 0);
                     
-                    // B. Set Composite Mode to "Destination-Out" (Erase)
                     ctx.globalCompositeOperation = 'destination-out';
                     
-                    // C. Draw the Eraser Path
                     ctx.beginPath();
                     ctx.moveTo(pathPoints[0], pathPoints[1]);
                     for (let i = 2; i < pathPoints.length; i += 2) {
@@ -69,10 +65,8 @@ const CanvasBoard = ({
                     ctx.lineWidth = 20; 
                     ctx.stroke();
 
-                    // D. Reset Composite Mode
                     ctx.globalCompositeOperation = 'source-over'; 
                     
-                    // E. Recalculate Area (Count remaining pixels)
                     const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
                     const data = imgData.data;
                     let pixelCount = 0;
@@ -81,27 +75,23 @@ const CanvasBoard = ({
                         if (data[i] > 0) pixelCount++;
                     }
 
-                    // F. Calculate New Real Area
                     let newRealArea = 0;
                     if (projectData && projectData.scale_factor && projectData.scale_factor > 0) {
                         newRealArea = pixelCount / Math.pow(projectData.scale_factor, 2);
                     }
                     
-                    // --- FIX: Update Real Length Proportionally ---
-                    // Since Walls use Length for calculation, we must reduce length if area is reduced.
                     let newRealLength = mask.real_length || 0;
                     if (mask.area > 0 && newRealArea < mask.area) {
                         const ratio = newRealArea / mask.area;
                         newRealLength = newRealLength * ratio;
                     }
 
-                    // G. Resolve (PRESERVE EXISTING HEIGHT)
                     resolve({
                         ...mask,
                         src: canvas.toDataURL("image/png"),
                         area: newRealArea,
                         real_length: newRealLength,
-                        height: mask.height // Keep the height specific to this mask
+                        height: mask.height 
                     });
                 };
 
@@ -182,13 +172,12 @@ const CanvasBoard = ({
         else if (mode === 'drawing') {
             const pos = e.target.getStage().getPointerPosition();
             
-            // Helper to get height
             const getSpecificHeight = () => {
                 if (['Windows', 'Doors'].includes(selectedCategory)) {
                     const h = window.prompt(`Enter height for this ${selectedCategory.slice(0, -1)} (m):`, "2.1");
                     return parseFloat(h) || 0;
                 }
-                return 0; // Walls don't need per-mask height
+                return 0; 
             };
 
             if (activeTool === 'wand') {
@@ -203,7 +192,6 @@ const CanvasBoard = ({
                                 category: selectedCategory
                             });
                             
-                            // Ask for height immediately
                             const itemHeight = getSpecificHeight();
 
                             setMasks([...masks, { 
@@ -211,7 +199,7 @@ const CanvasBoard = ({
                                 category: res.data.category, 
                                 area: res.data.real_area,
                                 real_length: res.data.real_length,
-                                height: itemHeight // Store height in the mask
+                                height: itemHeight 
                             }]);
                         } catch (err) { console.error("Line tool failed:", err); }
                     }
@@ -223,9 +211,7 @@ const CanvasBoard = ({
                             x: Math.round(pos.x), y: Math.round(pos.y), tolerance, category: selectedCategory
                         });
 
-                        // Ask for height immediately if needed
                         let itemHeight = 0;
-                        // Magic wand for windows/doors is rare given line tool, but we support it
                         if (['Windows', 'Doors'].includes(selectedCategory)) {
                              const h = window.prompt(`Enter height for this ${selectedCategory.slice(0, -1)} (m):`, "2.1");
                              itemHeight = parseFloat(h) || 0;
@@ -236,7 +222,7 @@ const CanvasBoard = ({
                             category: res.data.category, 
                             area: res.data.real_area,
                             real_length: res.data.real_length,
-                            height: itemHeight // Store height in the mask
+                            height: itemHeight 
                         }]);
                     } catch (err) { console.error("Magic Wand failed:", err); }
                 }
@@ -257,12 +243,52 @@ const CanvasBoard = ({
     const stageWidth = image ? image.width : 800;
     const stageHeight = image ? image.height : 600;
 
+    // --- IMPROVEMENT: GRID RENDERER ---
+    const GridOverlay = () => {
+        // Only render if we have a valid scale factor (pixels per meter)
+        const sf = projectData?.scale_factor;
+        if (!sf || sf <= 10) return null; // Avoid crashing with too many lines if SF is tiny
+
+        const width = stageWidth;
+        const height = stageHeight;
+        const lines = [];
+
+        // Vertical lines
+        for (let i = 0; i < width / sf; i++) {
+            lines.push(
+                <Line 
+                    key={`v-${i}`}
+                    points={[i * sf, 0, i * sf, height]}
+                    stroke="rgba(0, 0, 0, 0.15)"
+                    strokeWidth={1}
+                />
+            );
+        }
+
+        // Horizontal lines
+        for (let j = 0; j < height / sf; j++) {
+            lines.push(
+                <Line 
+                    key={`h-${j}`}
+                    points={[0, j * sf, width, j * sf]}
+                    stroke="rgba(0, 0, 0, 0.15)"
+                    strokeWidth={1}
+                />
+            );
+        }
+
+        return <Group>{lines}</Group>;
+    };
+
     return (
         <div className="border shadow-lg bg-white inline-block">
             <Stage width={stageWidth} height={stageHeight} onMouseDown={handleMouseDown} onMouseMove={handleMouseMove} onMouseUp={handleMouseUp}>
                 <Layer>
                     {image && <KonvaImage image={image} />}
                     
+                    {/* --- RENDER GRID IF CALIBRATED --- */}
+                    {mode !== 'calibration' && <GridOverlay />}
+
                     {/* MODE 1: SEGREGATION (SHOW ROOMS) */}
                     {mode === 'segregation' && rooms && rooms.map((room) => (
                         <Group key={room.id}>
