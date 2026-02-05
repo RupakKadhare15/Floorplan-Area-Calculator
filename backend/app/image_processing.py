@@ -282,6 +282,7 @@ def perform_room_segmentation(image_bytes, wall_mask_bytes_list, open_mask_bytes
         room_count += 1
 
     return rooms_data """ 
+
 import cv2
 import numpy as np
 import base64
@@ -290,17 +291,33 @@ import io
 import math
 import random
 
-# --- HELPER: PRECISE AREA CALCULATION ---
+# --- IMPROVEMENT: VECTOR-BASED AREA CALCULATION ---
 def calculate_precise_area(mask):
     """
-    Calculates area using Contour Geometry instead of simple pixel counting.
-    This handles diagonal lines and anti-aliasing better (Sub-pixel accuracy).
+    1. Converts Pixel Mask -> Vector Contours.
+    2. Smooths the jagged 'staircase' pixels using approxPolyDP.
+    3. Calculates area using Geometry (Shoelace Formula).
     """
+    # Find contours
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    total_area = 0
+    
+    total_vector_area = 0
+    
     for cnt in contours:
-        total_area += cv2.contourArea(cnt)
-    return total_area
+        # Filter noise
+        if cv2.contourArea(cnt) < 5: 
+            continue
+            
+        # --- THE VECTOR FIX ---
+        # Epsilon is the accuracy threshold. 0.2% of perimeter is standard for floor plans.
+        # This converts "jagged pixels" into "straight vector lines".
+        epsilon = 0.002 * cv2.arcLength(cnt, True)
+        approx_poly = cv2.approxPolyDP(cnt, epsilon, True)
+        
+        # Calculate area of the smooth vector polygon
+        total_vector_area += cv2.contourArea(approx_poly)
+        
+    return total_vector_area
 
 def process_magic_wand(image_bytes, seed_x, seed_y, tolerance, category, color=(0, 0, 255)):
     # 1. Decode image
@@ -368,7 +385,7 @@ def process_magic_wand(image_bytes, seed_x, seed_y, tolerance, category, color=(
         cv2.floodFill(img_cv, mask, (seed_x, seed_y), (255,255,255), (tolerance,)*3, (tolerance,)*3, 4|(255<<8))
         final_mask = mask[1:-1, 1:-1]
 
-    # --- CALCULATE LENGTH ---
+    # --- CALCULATE LENGTH (Approx perimeter / 2) ---
     pixel_length = 0
     if category == "Walls":
         contours, _ = cv2.findContours(final_mask, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
@@ -385,7 +402,9 @@ def process_magic_wand(image_bytes, seed_x, seed_y, tolerance, category, color=(
     pil_img.save(buff, format="PNG")
     img_str = base64.b64encode(buff.getvalue()).decode("utf-8")
     
+    # Use the new Vector function
     pixel_area = calculate_precise_area(final_mask)
+    
     return img_str, pixel_area, pixel_length
 
 def process_linear_opening(image_bytes, wall_mask_bytes_list, p1, p2, category, color=(0, 255, 0)):
@@ -436,7 +455,9 @@ def process_linear_opening(image_bytes, wall_mask_bytes_list, p1, p2, category, 
     pil_img.save(buff, format="PNG")
     img_str = base64.b64encode(buff.getvalue()).decode("utf-8")
     
+    # Use the new Vector function
     pixel_area = calculate_precise_area(final_mask)
+    
     return img_str, pixel_area, pixel_length
 
 def perform_room_segmentation(image_bytes, wall_mask_bytes_list, open_mask_bytes_list):
@@ -470,7 +491,7 @@ def perform_room_segmentation(image_bytes, wall_mask_bytes_list, open_mask_bytes
 
     # 3. SEAL GAPS (Thicken walls temporarily)
     kernel = np.ones((3, 3), np.uint8)
-    # [CHANGE] Reduced to 1 to prevent walls from getting too thick
+    # Keep this at 1 to minimize initial shrinkage
     closed_barriers = cv2.dilate(barriers, kernel, iterations=1)
 
     # 4. FIND ROOMS
@@ -485,29 +506,29 @@ def perform_room_segmentation(image_bytes, wall_mask_bytes_list, open_mask_bytes
 
     for i in range(1, num_labels):
         area = stats[i, cv2.CC_STAT_AREA]
+        # Filter noise (adjust 1000 if needed for very small rooms like WC)
         if i == background_id or area < 1000: continue
 
-        # --- SMART ROOM RECOVERY ---
+        # --- SMART ROOM RECOVERY (THE FIX) ---
         blob_mask = np.zeros(labels.shape, dtype=np.uint8)
         blob_mask[labels == i] = 255
         
-        # [CRITICAL FIX] 
-        # Instead of ERODING (shrinking), we DILATE (expand) slightly.
-        # This reclaims the space lost when we thickened the walls in Step 3.
-        blob_mask = cv2.dilate(blob_mask, kernel, iterations=1)
+        # [CHANGE HERE] Increased iterations to 2 to reclaim wall edge space
+        blob_mask = cv2.dilate(blob_mask, kernel, iterations=2)
 
-        # Snap to Polygon
+        # Snap to Polygon (Vectorizing rooms)
         contours, _ = cv2.findContours(blob_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         if not contours: continue
         cnt = contours[0]
 
-        # [CHANGE] Relaxed epsilon (0.003) to smooth out pixel noise
-        epsilon = 0.003 * cv2.arcLength(cnt, True) 
+        # 0.2% epsilon gives nice clean lines
+        epsilon = 0.002 * cv2.arcLength(cnt, True) 
         approx_curve = cv2.approxPolyDP(cnt, epsilon, True)
         
         clean_mask = np.zeros((h, w), dtype=np.uint8)
         cv2.drawContours(clean_mask, [approx_curve], -1, 255, -1)
         
+        # Use geometric area for precision
         precise_pixel_area = cv2.contourArea(approx_curve)
 
         color = (random.randint(100, 255), random.randint(100, 255), random.randint(100, 255))
