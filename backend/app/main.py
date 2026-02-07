@@ -176,25 +176,36 @@
 # @app.post("/project/{project_id}/segregate-rooms")
 # async def segregate_rooms(project_id: str):
 #     project = await project_collection.find_one({"_id": ObjectId(project_id)})
-#     if not project: raise HTTPException(status_code=404, detail="Project not found")
+#     if not project:
+#         raise HTTPException(status_code=404, detail="Project not found")
+        
 #     image_data = base64.b64decode(project["image_data"])
+    
+#     # Separate masks into Wall-type and Opening-type
 #     wall_masks = []
 #     opening_masks = []
+    
 #     if "masks" in project:
 #         for m in project["masks"]:
-#             decoded = base64.b64decode(m["src"].replace("data:image/png;base64,", ""))
-#             if m["category"] == "Walls": wall_masks.append(decoded)
-#             elif m["category"] in ["Doors", "Windows"]: opening_masks.append(decoded)
+#             b64_clean = m["src"].replace("data:image/png;base64,", "")
+#             decoded = base64.b64decode(b64_clean)
+            
+#             if m["category"] == "Walls":
+#                 wall_masks.append(decoded)
+#             elif m["category"] in ["Doors", "Windows"]:
+#                 opening_masks.append(decoded)
 
+#     # Process
 #     rooms = perform_room_segmentation(image_data, wall_masks, opening_masks)
+    
+#     # Calculate Real Area if scale exists
 #     sf = project.get("scale_factor")
 #     if sf:
 #         for r in rooms:
 #             r["real_area"] = r["pixel_area"] / (sf ** 2)
-#             # Real world perimeter for wall area multiplication
-#             r["real_perimeter"] = r.get("pixel_perimeter", 0) / sf
             
 #     return {"rooms": rooms}
+
 
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
