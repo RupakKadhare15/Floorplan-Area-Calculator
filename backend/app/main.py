@@ -203,5 +203,6 @@ async def segregate_rooms(project_id: str):
     if sf:
         for r in rooms:
             r["real_area"] = r["pixel_area"] / (sf ** 2)
+            r["real_perimeter"] = r.get("pixel_perimeter", 0) / sf
             
     return {"rooms": rooms}
