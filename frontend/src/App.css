@@ -14,8 +14,7 @@ body {
 }
 
 .app-container {
-  display: grid;
-  grid-template-columns: 260px 1fr 280px; /* Sidebar | Canvas | Stats */
+  display: flex; /* Changed to flex for centering control */
   height: 100vh;
   width: 100vw;
   overflow: hidden;
@@ -23,6 +22,8 @@ body {
 
 /* --- SIDEBAR --- */
 .left-sidebar {
+  width: 260px;
+  flex-shrink: 0;
   background: white;
   border-right: 1px solid var(--border);
   display: flex;
@@ -78,7 +79,6 @@ body {
 }
 .upload-btn:hover { border-color: var(--primary); color: var(--primary); background: #eff6ff; }
 
-/* Vertical Stack for Main Buttons */
 .vertical-stack {
   display: flex;
   flex-direction: column;
@@ -102,13 +102,11 @@ body {
 
 .main-btn:hover { background: #f8fafc; color: var(--text-dark); }
 
-/* Active States */
 .main-btn.active { background: #eff6ff; color: var(--primary); font-weight: 600; }
 .main-btn.active-wall { background: #eff6ff; color: blue; font-weight: 600; border-color: #bfdbfe; }
 .main-btn.active-door { background: #f0fdf4; color: green; font-weight: 600; border-color: #bbf7d0; }
 .main-btn.active-window { background: #fff7ed; color: orange; font-weight: 600; border-color: #fed7aa; }
 
-/* Action Buttons Row */
 .tools-row {
   display: flex;
   gap: 8px;
@@ -134,12 +132,14 @@ body {
 
 /* --- CANVAS --- */
 .main-canvas-area {
+  flex: 1;
   background: #e2e8f0;
   display: flex;
-  align-items: center;
-  justify-content: center;
+  align-items: center;     /* REQUIRED: VERTICAL CENTER */
+  justify-content: center;  /* REQUIRED: HORIZONTAL CENTER */
   position: relative;
-  overflow: hidden;
+  overflow: auto;          /* Allow scroll if image is huge */
+  padding: 40px;
 }
 
 .empty-state {
@@ -149,15 +149,19 @@ body {
 
 /* --- RIGHT STATS --- */
 .right-panel {
+  width: 300px;
+  flex-shrink: 0;
   background: white;
   border-left: 1px solid var(--border);
   display: flex;
   flex-direction: column;
+  height: 100vh;
 }
 
 .panel-header {
   padding: 24px;
   border-bottom: 1px solid var(--border);
+  background: white;
 }
 .panel-header h2 {
   font-size: 16px;
@@ -168,7 +172,11 @@ body {
   color: var(--text-dark);
 }
 
-.stats-content { padding: 24px; flex: 1; }
+.stats-content { 
+  padding: 24px; 
+  flex: 1; 
+  overflow-y: auto; /* REQUIRED: SCROLLABLE LIST */
+}
 
 .stat-card {
   padding: 20px;
@@ -187,20 +195,17 @@ body {
 
 .stat-value { font-size: 28px; font-weight: 800; color: #0f172a; }
 
-.stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-
 .mini-stat {
   padding: 16px;
   border: 1px solid var(--border);
   border-radius: 8px;
-  text-align: center;
+  margin-bottom: 12px;
 }
-.mini-stat span { display: block; font-size: 12px; color: #64748b; margin-bottom: 4px; }
-.mini-stat strong { font-size: 16px; color: #0f172a; }
 
 .project-meta {
   padding: 24px;
   border-top: 1px solid var(--border);
+  background: white;
 }
 .meta-item {
   display: flex;
