@@ -2,31 +2,20 @@ import React, { useState, useEffect } from "react";
 import axios from "axios";
 import Sidebar from "./components/Sidebar";
 import CanvasBoard from "./components/CanvasBoard";
-import { AreaChart, CheckCircle2, LayoutDashboard, Settings2 } from "lucide-react";
+import { AreaChart, CheckCircle2, LayoutDashboard } from "lucide-react";
 import "./App.css";
 
-function App() {
+const API_BASE = process.env.REACT_APP_API_URL || "http://localhost:8000";
 
-  const API_BASE = process.env.REACT_APP_API_URL || "http://localhost:8000";
-  // --- GLOBAL STATE ---
+function App() {
   const [projectId, setProjectId] = useState(null);
   const [projectData, setProjectData] = useState(null);
-  
-  // Tools & Modes
   const [mode, setMode] = useState("calibration"); 
   const [activeTool, setActiveTool] = useState("wand"); 
   const [selectedCategory, setSelectedCategory] = useState("Walls");
-  
-  // Data State
   const [masks, setMasks] = useState([]);
   const [rooms, setRooms] = useState([]);
 
-  // --- NEW: HEIGHT STATE ---
-  // Initialize with standard defaults (meters)
-  const [windowHeight, setWindowHeight] = useState(2.1); 
-  const [doorHeight, setDoorHeight] = useState(2.1);
-
-  // Uploader Logic
   const handleFileUpload = async (file) => {
     const formData = new FormData();
     formData.append("file", file);
@@ -37,18 +26,13 @@ function App() {
       setProjectId(response.data._id);
       setProjectData(response.data);
       setMasks(response.data.masks || []); 
-      
-      // Load heights if they exist in saved project, otherwise keep defaults
-      if (response.data.window_height) setWindowHeight(response.data.window_height);
-      if (response.data.door_height) setDoorHeight(response.data.door_height);
-      
     } catch (error) {
       console.error("Upload failed", error);
       alert("Upload failed. Check console.");
     }
   };
 
-  // --- AUTO-SAVE LOGIC (Includes All Heights) ---
+  // --- AUTO-SAVE LOGIC ---
   useEffect(() => {
     if (!projectId) return;
 
@@ -57,20 +41,15 @@ function App() {
         await axios.put(`${API_BASE}/project/${projectId}/state`,{ 
           masks: masks,
           wall_height: projectData?.wall_height,
-          window_height: windowHeight, // <--- Saving new height
-          door_height: doorHeight      // <--- Saving new height
         });
-        console.log("Auto-saved project state");
       } catch (err) {
         console.error("Auto-save failed", err);
       }
     };
-
     const timeoutId = setTimeout(saveData, 1000);
     return () => clearTimeout(timeoutId);
-  }, [masks, projectData?.wall_height, windowHeight, doorHeight, projectId]);
+  }, [masks, projectData?.wall_height, projectId]);
   
-  // --- ACTIONS ---
   const handleUndo = () => setMasks((prev) => prev.slice(0, -1));
   const handleClear = () => setMasks([]);
 
@@ -84,50 +63,58 @@ function App() {
       await axios.put(`${API_BASE}/project/${projectId}/state`, { 
         masks: masks,
         wall_height: projectData?.wall_height,
-        window_height: windowHeight,
-        door_height: doorHeight
       });
-
       const res = await axios.post(`${API_BASE}/project/${projectId}/segregate-rooms`);
       setRooms(res.data.rooms);
       setMode('segregation');
     } catch (err) {
       console.error("Segregation failed", err);
-      alert("Failed to split rooms. Make sure walls are highlighted.");
     }
   };
 
-  // --- UPDATED AREA CALCULATION HELPER ---
   const getArea = (cat) => {
     const catMasks = masks.filter(m => m.category === cat);
-    
-    // 1. Walls: Length x Wall Height
     if (cat === "Walls") {
-      const totalLength = catMasks.reduce((sum, m) => sum + (m.real_length || 0), 0);
-      const height = parseFloat(projectData?.wall_height) || 0;
-      return (totalLength * height).toFixed(2);
+      const wallHeight = parseFloat(projectData?.wall_height) || 0;
+      const baseWallArea = catMasks.reduce((sum, m) => sum + ((m.real_length || 0) * wallHeight), 0);
+      const remainingArea = masks.filter(m => ['Doors', 'Windows'].includes(m.category)).reduce((sum, m) => {
+        const verticalDiff = Math.max(0, wallHeight - (m.height || 0));
+        return sum + ((m.real_length || 0) * verticalDiff);
+      }, 0);
+      return (baseWallArea + remainingArea).toFixed(2);
     }
-    
-    // 2. Windows: Length x Window Height
-    if (cat === "Windows") {
-      const totalLength = catMasks.reduce((sum, m) => sum + (m.real_length || 0), 0);
-      return (totalLength * windowHeight).toFixed(2);
+    if (['Windows', 'Doors'].includes(cat)) {
+       return catMasks.reduce((sum, m) => {
+        return sum + ((m.real_length || 0) * (m.height || 0));
+      }, 0).toFixed(2);
     }
-
-    // 3. Doors: Length x Door Height
-    if (cat === "Doors") {
-      const totalLength = catMasks.reduce((sum, m) => sum + (m.real_length || 0), 0);
-      return (totalLength * doorHeight).toFixed(2);
-    }
-
-    // 4. Others (Floor, etc.): Polygon Area
-    return catMasks.reduce((sum, m) => sum + (m.area || 0), 0).toFixed(2);
+    return 0;
   };
 
-  // Helper to handle wall height change separately since it's in projectData
-  const handleWallHeightChange = (e) => {
-    setProjectData(prev => ({ ...prev, wall_height: e.target.value }));
+  const getCeilingArea = () => {
+    if (!rooms || rooms.length === 0) return "0.00";
+    const total = rooms.reduce((sum, room) => sum + (room.real_area || 0), 0);
+    return total.toFixed(2);
   };
+
+  const getTotalNetWallArea = () => {
+    const wallHeight = parseFloat(projectData?.wall_height) || 0;
+    const totalGross = rooms.reduce((sum, room) => sum + ((room.real_perimeter || 0) * wallHeight), 0);
+    const totalOpenings = masks.filter(m => ['Doors', 'Windows'].includes(m.category))
+                               .reduce((sum, m) => sum + ((m.real_length || 0) * (m.height || 0)), 0);
+    return (totalGross - totalOpenings).toFixed(2);
+  };
+
+  const getNetRoomWallArea = (room) => {
+    const wallHeight = parseFloat(projectData?.wall_height) || 0;
+    const grossWallArea = (room.real_perimeter || 0) * wallHeight;
+    const totalOpeningsArea = masks.filter(m => ['Doors', 'Windows'].includes(m.category))
+                                   .reduce((sum, m) => sum + ((m.real_length || 0) * (m.height || 0)), 0);
+    const deductionPerRoom = totalOpeningsArea / (rooms.length || 1);
+    return (grossWallArea - deductionPerRoom).toFixed(2);
+  };
+
+  const getCount = (cat) => masks.filter(m => m.category === cat).length;
 
   return (
     <div className="app-container">
@@ -180,109 +167,48 @@ function App() {
         </div>
         
         <div className="stats-content">
-          
-          {/* VIEW 1: ROOM LIST */}
           {mode === 'segregation' ? (
              <div className="flex flex-col gap-3">
-               {rooms.length === 0 ? (
-                 <p className="text-gray-400 text-sm text-center">No rooms detected yet.</p>
-               ) : (
-                 rooms.map(room => (
+               <div className="stat-card mb-4" style={{ background: '#eff6ff', border: '1px solid #dbeafe' }}>
+                 <div className="stat-title">Total Net Wall Area</div>
+                 <div className="stat-value">{getTotalNetWallArea()} m²</div>
+               </div>
+               {rooms.map(room => (
                    <div key={room.id} className="mini-stat flex justify-between items-center px-4" style={{borderColor: '#e2e8f0'}}>
-                     <div className="flex items-center gap-2">
-                       <div style={{width:12, height:12, borderRadius:'50%', background: room.color, border: '1px solid rgba(0,0,0,0.1)'}}></div>
-                       <span className="font-bold text-gray-700">{room.id}</span>
+                     <div className="flex flex-col">
+                       <div className="flex items-center gap-2">
+                         <div style={{width:12, height:12, borderRadius:'50%', background: room.color, border: '1px solid rgba(0,0,0,0.1)'}}></div>
+                         <span className="font-bold text-gray-700">{room.id}</span>
+                       </div>
+                       <span className="text-xs text-gray-500">Wall: {getNetRoomWallArea(room)} m²</span>
                      </div>
-                     <strong className="text-lg">{room.real_area ? room.real_area.toFixed(2) : room.pixel_area} m²</strong>
+                     <strong className="text-lg">{room.real_area ? room.real_area.toFixed(2) : 0} m²</strong>
                    </div>
-                 ))
-               )}
+               ))}
              </div>
           ) : (
-            /* VIEW 2: STANDARD REPORT */
             <>
-              {/* --- DYNAMIC HEIGHT INPUTS --- */}
-              {/* This section appears only when specific categories are selected */}
-              <div className="mb-4 p-3 bg-blue-50 rounded-lg border border-blue-100">
-                <div className="flex items-center gap-2 mb-2 text-blue-800 font-semibold text-sm">
-                  <Settings2 size={14} /> 
-                  <span>Active Height Settings</span>
-                </div>
-                
-                {selectedCategory === 'Walls' && (
-                  <div className="flex flex-col gap-1">
-                    <label className="text-xs text-gray-500">Wall Height (m)</label>
-                    <input 
-                      type="number" 
-                      step="0.1"
-                      className="p-1 border rounded"
-                      value={projectData?.wall_height || ''} 
-                      onChange={handleWallHeightChange}
-                    />
-                  </div>
-                )}
-                
-                {selectedCategory === 'Windows' && (
-                  <div className="flex flex-col gap-1">
-                    <label className="text-xs text-gray-500">Window Height (m)</label>
-                    <input 
-                      type="number" 
-                      step="0.1"
-                      className="p-1 border rounded"
-                      value={windowHeight} 
-                      onChange={(e) => setWindowHeight(e.target.value)}
-                    />
-                  </div>
-                )}
-
-                {selectedCategory === 'Doors' && (
-                  <div className="flex flex-col gap-1">
-                    <label className="text-xs text-gray-500">Door Height (m)</label>
-                    <input 
-                      type="number" 
-                      step="0.1"
-                      className="p-1 border rounded"
-                      value={doorHeight} 
-                      onChange={(e) => setDoorHeight(e.target.value)}
-                    />
-                  </div>
-                )}
-                
-                {/* Default view if no specific category matches */}
-                {!['Walls', 'Windows', 'Doors'].includes(selectedCategory) && (
-                   <span className="text-xs text-gray-400 italic">Select Walls, Windows, or Doors to adjust height.</span>
-                )}
-              </div>
-
-              {/* Walls Card */}
-              <div className={`stat-card walls ${selectedCategory === 'Walls' ? 'ring-2 ring-blue-500' : ''}`}>
-                <div className="stat-title">Walls Area (L × H)</div>
+              <div className="mb-4 text-sm font-semibold text-gray-600">Wall Height :- {projectData?.wall_height || 0} m</div>
+              <div className="stat-card walls mb-4 ring-2 ring-blue-500">
+                <div className="stat-title">Total Wall Area</div>
                 <div className="stat-value">{getArea('Walls')} m²</div>
               </div>
-
-              {/* Grid */}
-              <div className="stats-grid">
-                <div className={`mini-stat ${selectedCategory === 'Doors' ? 'ring-2 ring-blue-500' : ''}`}>
-                  <span>Doors (L×H)</span>
-                  <strong>{getArea('Doors')} m²</strong>
-                </div>
-                <div className={`mini-stat ${selectedCategory === 'Windows' ? 'ring-2 ring-blue-500' : ''}`}>
-                  <span>Windows (L×H)</span>
-                  <strong>{getArea('Windows')} m²</strong>
-                </div>
+              <div className="stat-card mb-4" style={{ background: '#faf5ff', border: '1px solid #e9d5ff' }}>
+                <div className="stat-title" style={{color: '#9333ea'}}>Total Ceiling Area</div>
+                <div className="stat-value" style={{color: '#6b21a8'}}>{getCeilingArea()} m²</div>
               </div>
-
-              {/* Ceiling Card */}
-              <div className="stat-card ceiling mt-3">
-                <div className="stat-title">Ceiling Area</div>
-                <div className="stat-value">{getArea('Ceiling')} m²</div>
+              <div className="stat-card mb-4" style={{ background: '#f0fdf4', border: '1px solid #bbf7d0' }}>
+                <div className="stat-title">Doors Area (Count - {getCount('Doors')})</div>
+                <div className="stat-value">{getArea('Doors')} m²</div>
+              </div>
+              <div className="stat-card mb-4" style={{ background: '#fff7ed', border: '1px solid #fed7aa' }}>
+                <div className="stat-title">Windows Area (Count - {getCount('Windows')})</div>
+                <div className="stat-value">{getArea('Windows')} m²</div>
               </div>
             </>
           )}
-
         </div>
 
-        {/* Footer Info */}
         {projectData && (
           <div className="project-meta">
             <div className="meta-item">

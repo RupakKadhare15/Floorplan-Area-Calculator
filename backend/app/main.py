@@ -7,9 +7,9 @@ import base64
 import traceback
 
 # Import your modules
-from .database import project_collection
-from .models import CalibrationModel, MagicWandModel, LineToolModel
-from .image_processing import process_magic_wand, process_linear_opening, perform_room_segmentation
+from database import project_collection
+from models import CalibrationModel, MagicWandModel, LineToolModel
+from image_processing import process_magic_wand, process_linear_opening, perform_room_segmentation
 
 app = FastAPI()
 
@@ -24,7 +24,6 @@ app.add_middleware(
 # --- COLOR DEFINITIONS (R, G, B) ---
 CATEGORY_COLORS = {
     "Walls": (0, 0, 255),      # Blue
-    "Ceiling": (255, 0, 0),    # Red
     "Doors": (0, 255, 0),      # Green
     "Windows": (255, 165, 0)   # Orange
 }
@@ -204,42 +203,6 @@ async def segregate_rooms(project_id: str):
     if sf:
         for r in rooms:
             r["real_area"] = r["pixel_area"] / (sf ** 2)
+            r["real_perimeter"] = r.get("pixel_perimeter", 0) / sf
             
     return {"rooms": rooms}
-
-    
-"""
-async def magic_wand(project_id: str, payload: MagicWandModel):
-    project = await project_collection.find_one({"_id": ObjectId(project_id)})
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-        
-    image_data = base64.b64decode(project["image_data"])
-    
-    target_color = CATEGORY_COLORS.get(payload.category, (0, 0, 255))
-    
-    # 👇 LOGIC: If category is 'Walls', enable strict structure isolation
-    # This prevents leaking into furniture/text
-    use_isolation = (payload.category == "Walls")
-
-    mask_b64, pixel_area = process_magic_wand(
-        image_data, 
-        payload.x, 
-        payload.y, 
-        payload.tolerance,
-        color=target_color,
-        isolate_structure=use_isolation # <--- Pass the flag here
-    )
-    
-    real_area = None
-    if project.get("scale_factor"):
-        sf = project["scale_factor"]
-        real_area = pixel_area / (sf ** 2)
-
-    return {
-        "mask_image": mask_b64,
-        "pixel_area": pixel_area,
-        "real_area": real_area,
-        "unit": project.get("unit", "px"),
-        "category": payload.category
-    }"""
