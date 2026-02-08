@@ -6,6 +6,17 @@ import io
 import math
 import random
 
+# --- 1. NEW HELPER: ADAPTIVE KERNEL SIZE (Fixes PDF Leaking) ---
+def get_dynamic_kernel(image_shape, base_size=3, reference_width=800):
+    h, w = image_shape[:2]
+    current_dim = max(h, w)
+    scale = current_dim / reference_width
+    new_size = int(base_size * scale)
+    if new_size % 2 == 0:
+        new_size += 1
+    new_size = max(3, new_size)
+    return np.ones((new_size, new_size), np.uint8)
+
 def calculate_precise_area(mask):
     """Calculates area using smoothed vector contours."""
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -27,16 +38,23 @@ def process_magic_wand(image_bytes, seed_x, seed_y, tolerance, category, color=(
     _, binary = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY_INV)
     final_mask = np.zeros((h, w), np.uint8)
 
+    # --- CHANGE 1: Get Dynamic Kernel ---
+    kernel = get_dynamic_kernel(img_cv.shape, base_size=3)
+
     # --- STRATEGY 1: LOCALIZED FILL (Doors & Windows) ---
     if category in ["Doors", "Windows"]:
-        roi_size = 150 
+        # Scale ROI size to match image size
+        roi_base = 150
+        scale_ratio = max(h, w) / 800
+        roi_size = int(roi_base * scale_ratio)
+        
         half = roi_size // 2
         x1, y1 = max(0, seed_x - half), max(0, seed_y - half)
         x2, y2 = min(w, seed_x + half), min(h, seed_y + half)
         roi = binary[y1:y2, x1:x2].copy()
         roi_seed_x, roi_seed_y = seed_x - x1, seed_y - y1
         if roi[roi_seed_y, roi_seed_x] == 0:
-            r_search = 10
+            r_search = int(10 * scale_ratio) # Scaled search radius
             found = False
             for dy in range(-r_search, r_search):
                 for dx in range(-r_search, r_search):
@@ -47,19 +65,23 @@ def process_magic_wand(image_bytes, seed_x, seed_y, tolerance, category, color=(
                             found = True
                             break
                 if found: break
-        kernel = np.ones((3, 3), np.uint8)
+        
+        # Use dynamic kernel here
         if category == "Doors":
             roi_processed = cv2.dilate(roi, kernel, iterations=3)
         else:
             roi_processed = cv2.morphologyEx(roi, cv2.MORPH_CLOSE, kernel, iterations=2)
+            
         h_roi, w_roi = roi.shape[:2]
         mask_roi = np.zeros((h_roi + 2, w_roi + 2), np.uint8)
         cv2.floodFill(roi_processed, mask_roi, (roi_seed_x, roi_seed_y), 255, flags=4|(255<<8)|cv2.FLOODFILL_FIXED_RANGE)
         filled_roi = mask_roi[1:-1, 1:-1]
         result_roi = cv2.bitwise_and(filled_roi, roi)
         final_mask[y1:y2, x1:x2] = result_roi
+
+    # --- STRATEGY 2: GLOBAL ISOLATION (Walls) ---
     elif category == "Walls":
-        kernel = np.ones((3, 3), np.uint8)
+        # Use dynamic kernel here
         processed = cv2.erode(binary, kernel, iterations=1)
         mask = np.zeros((h + 2, w + 2), np.uint8)
         cv2.floodFill(processed, mask, (seed_x, seed_y), 255, flags=4|(255<<8)|cv2.FLOODFILL_FIXED_RANGE)
@@ -102,7 +124,12 @@ def process_linear_opening(image_bytes, wall_mask_bytes_list, p1, p2, category, 
                 wall_map = cv2.bitwise_or(wall_map, m_cv)
     _, wall_binary = cv2.threshold(wall_map, 10, 255, cv2.THRESH_BINARY)
     dist_transform = cv2.distanceTransform(wall_binary, cv2.DIST_L2, 5)
-    check_radius = 20
+    
+    # Scale check radius for linear tool as well
+    scale_ratio = max(h, w) / 800
+    base_check_radius = 20
+    check_radius = int(base_check_radius * scale_ratio)
+    
     thicknesses = []
     for p in [p1, p2]:
         x, y = int(p[0]), int(p[1])
@@ -112,7 +139,11 @@ def process_linear_opening(image_bytes, wall_mask_bytes_list, p1, p2, category, 
         if patch.size > 0:
             max_val = np.max(patch)
             if max_val > 0: thicknesses.append(max_val * 2)
-    final_thickness = int(np.mean(thicknesses)) if thicknesses else 15
+    
+    base_thickness = 15
+    fallback_thickness = int(base_thickness * scale_ratio)
+    final_thickness = int(np.mean(thicknesses)) if thicknesses else fallback_thickness
+    
     raw_mask = np.zeros((h, w), np.uint8)
     cv2.line(raw_mask, (int(p1[0]), int(p1[1])), (int(p2[0]), int(p2[1])), 255, final_thickness)
     mask_inv_walls = cv2.bitwise_not(wall_binary)
@@ -154,7 +185,10 @@ def perform_room_segmentation(image_bytes, wall_mask_bytes_list, open_mask_bytes
 
     add_masks_robust(wall_mask_bytes_list)
     add_masks_robust(open_mask_bytes_list)
-    kernel = np.ones((3, 3), np.uint8)
+    
+    # --- CHANGE 3: Use Dynamic Kernel here too ---
+    kernel = get_dynamic_kernel(img_cv.shape, base_size=3)
+    
     closed_barriers = cv2.dilate(barriers, kernel, iterations=1)
     room_space = cv2.bitwise_not(closed_barriers)
     num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(room_space, connectivity=4)
@@ -165,12 +199,18 @@ def perform_room_segmentation(image_bytes, wall_mask_bytes_list, open_mask_bytes
     background_id = sorted_indices[0]
     room_count = 1
 
+    # Filter out tiny noise relative to image size
+    min_room_area = (w * h) * 0.0005 
+
     for i in range(1, num_labels):
         area = stats[i, cv2.CC_STAT_AREA]
-        if i == background_id or area < 1000: continue
+        if i == background_id or area < min_room_area: continue
         blob_mask = np.zeros(labels.shape, dtype=np.uint8)
         blob_mask[labels == i] = 255
+        
+        # Use dynamic kernel to reclaim edge
         blob_mask = cv2.dilate(blob_mask, kernel, iterations=2)
+        
         contours, _ = cv2.findContours(blob_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         if not contours: continue
         cnt = contours[0]

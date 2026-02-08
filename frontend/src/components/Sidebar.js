@@ -1,5 +1,6 @@
 import React from 'react';
-import { Upload, Ruler, Eraser, Undo2, Trash2, BoxSelect, DoorOpen, LayoutTemplate, Maximize, Split } from 'lucide-react';
+import { Upload, Ruler, Eraser, Undo2, Trash2, BoxSelect, DoorOpen, LayoutTemplate, Split } from 'lucide-react';
+import logoSrc from './Logo.png';
 
 const Sidebar = ({ 
   onUpload, mode, setMode, 
@@ -11,7 +12,17 @@ const Sidebar = ({
 }) => {
 
   const handleFileChange = (e) => {
-    if (e.target.files[0]) onUpload(e.target.files[0]);
+    const file = e.target.files[0];
+    if (!file) return;
+
+    // --- NEW: PDF CHECK ---
+    if (file.type === "application/pdf") {
+      const pageInput = window.prompt("PDF detected. Enter page number to render (default: 1):", "1");
+      const pageIndex = (parseInt(pageInput) || 1) - 1; 
+      onUpload(file, pageIndex);
+    } else {
+      onUpload(file, 0);
+    }
   };
 
   const selectCat = (cat) => {
@@ -28,7 +39,7 @@ const Sidebar = ({
   return (
     <aside className="left-sidebar">
       <div className="brand">
-        <h1>SmartPlan <span className="text-light">Pro</span></h1>
+        <img src={logoSrc} alt="BygAI.dk Logo" style={{ height: '40px' }} />
       </div>
 
       <div className="scroll-content">
@@ -39,7 +50,7 @@ const Sidebar = ({
           <label className="upload-btn">
             <Upload size={18} />
             <span>Upload Plan</span>
-            <input type="file" hidden onChange={handleFileChange} />
+            <input type="file" accept=".jpg,.jpeg,.png,.pdf" hidden onChange={handleFileChange} />
           </label>
         </div>
 
