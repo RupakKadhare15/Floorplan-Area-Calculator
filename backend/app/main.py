@@ -5,11 +5,13 @@ from pydantic import BaseModel
 from typing import List, Optional
 import base64
 import traceback
+import io
+from pdf2image import convert_from_bytes
 
 # Import your modules
-from database import project_collection
-from models import CalibrationModel, MagicWandModel, LineToolModel
-from image_processing import process_magic_wand, process_linear_opening, perform_room_segmentation
+from .database import project_collection
+from .models import CalibrationModel, MagicWandModel, LineToolModel
+from .image_processing import process_magic_wand, process_linear_opening, perform_room_segmentation
 
 app = FastAPI()
 
@@ -36,10 +38,35 @@ class UpdateProjectStateModel(BaseModel):
     door_height: Optional[float] = None
 
 @app.post("/upload")
-async def upload_image(file: UploadFile = File(...)):
+async def upload_image(
+    file: UploadFile = File(...),
+    pdf_page: int = 0 # NEW PARAMETER (Default to first page)
+):
     try:
         content = await file.read()
-        b64_image = base64.b64encode(content).decode('utf-8')
+        b64_image = ""
+
+        # --- NEW: PDF LOGIC ---
+        if file.content_type == "application/pdf":
+            # Convert PDF -> Image at 300 DPI (High Res)
+            images = convert_from_bytes(
+                content, 
+                dpi=200, 
+                first_page=pdf_page+1, 
+                last_page=pdf_page+1
+            )
+            
+            if images:
+                # Save as JPEG (Quality 85) to be efficient with large 300DPI images
+                img_byte_arr = io.BytesIO()
+                images[0].save(img_byte_arr, format='JPEG', quality=85)
+                b64_image = base64.b64encode(img_byte_arr.getvalue()).decode('utf-8')
+            else:
+                raise HTTPException(status_code=400, detail="Could not read PDF page")
+        else:
+            # --- STANDARD IMAGE LOGIC ---
+            b64_image = base64.b64encode(content).decode('utf-8')
+
         project = {
             "filename": file.filename,
             "image_data": b64_image,
@@ -71,7 +98,6 @@ async def update_project_state(project_id: str, payload: UpdateProjectStateModel
         update_data["masks"] = payload.masks
     if payload.wall_height is not None:
         update_data["wall_height"] = payload.wall_height
-        
     if not update_data:
         return {"status": "no_change"}
 
