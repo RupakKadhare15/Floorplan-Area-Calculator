@@ -16,11 +16,13 @@ function App() {
   const [masks, setMasks] = useState([]);
   const [rooms, setRooms] = useState([]);
 
-  const handleFileUpload = async (file) => {
+  // --- UPDATED UPLOAD FUNCTION ---
+  const handleFileUpload = async (file, pageIndex = 0) => {
     const formData = new FormData();
     formData.append("file", file);
     try {
-      const response = await axios.post(`${API_BASE}/upload`, formData, {
+      // Pass the PDF page index to the backend
+      const response = await axios.post(`${API_BASE}/upload?pdf_page=${pageIndex}`, formData, {
         headers: { "Content-Type": "multipart/form-data" },
       });
       setProjectId(response.data._id);
@@ -28,7 +30,7 @@ function App() {
       setMasks(response.data.masks || []); 
     } catch (error) {
       console.error("Upload failed", error);
-      alert("Upload failed. Check console.");
+      alert("Upload failed. If this is a large PDF, it might have timed out.");
     }
   };
 
