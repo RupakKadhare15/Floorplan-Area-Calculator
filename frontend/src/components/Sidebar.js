@@ -95,15 +95,6 @@ const Sidebar = ({
               <span>Highlight Walls</span>
             </button>
 
-            {/* Ceiling */}
-            <button 
-              className={`main-btn ${selectedCategory === 'Ceiling' && mode === 'drawing' ? 'active-ceiling' : ''}`}
-              onClick={() => selectCat('Ceiling')}
-            >
-              <Maximize size={18} />
-              <span>Highlight Ceiling</span>
-            </button>
-
             {/* Doors */}
             <button 
               className={`main-btn ${selectedCategory === 'Doors' && mode === 'drawing' ? 'active-door' : ''}`}
