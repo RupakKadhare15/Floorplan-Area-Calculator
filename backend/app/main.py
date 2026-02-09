@@ -9,9 +9,9 @@ import io
 from pdf2image import convert_from_bytes
 
 # Import your modules
-from .database import project_collection
-from .models import CalibrationModel, MagicWandModel, LineToolModel
-from .image_processing import process_magic_wand, process_linear_opening, perform_room_segmentation
+from database import project_collection
+from models import CalibrationModel, MagicWandModel, LineToolModel
+from image_processing import process_magic_wand, process_linear_opening, perform_room_segmentation
 
 app = FastAPI()
 
