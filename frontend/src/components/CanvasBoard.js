@@ -1,3 +1,6 @@
+
+
+
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { Stage, Layer, Image as KonvaImage, Line, Circle, Text, Group } from 'react-konva';
 import useImage from 'use-image';
@@ -314,26 +317,29 @@ const CanvasBoard = ({
                     {mode === 'segregation' && rooms && rooms.map((room) => (
                         <Group key={room.id}>
                             <SimpleMask src={cleanBase64(room.src)} width={image.width} height={image.height} />
+                            
+                            {/* --- CHANGE START: SMALLER FONT SIZE --- */}
                             <Text 
                                 x={room.center.x - 25} 
                                 y={room.center.y} 
-                                text={`${room.id}\n${room.real_area ? room.real_area.toFixed(1) + ' m²' : ''}`}
-                                fontSize={24} // Larger font for PDF
+                                text={`${room.id}\n${room.real_area ? room.real_area.toFixed(1) + ' m²' : ''}\nP: ${room.real_perimeter ? room.real_perimeter.toFixed(1) + ' m' : ''}`}
+                                fontSize={14}  // REDUCED FROM 24
                                 fontStyle="bold"
                                 fill="black"
                                 align="center"
                                 stroke="white"
-                                strokeWidth={4}
+                                strokeWidth={2} // REDUCED FROM 4
                             />
                             <Text 
                                 x={room.center.x - 25} 
                                 y={room.center.y} 
-                                text={`${room.id}\n${room.real_area ? room.real_area.toFixed(1) + ' m²' : ''}`}
-                                fontSize={24}
+                                text={`${room.id}\n${room.real_area ? room.real_area.toFixed(1) + ' m²' : ''}\nP: ${room.real_perimeter ? room.real_perimeter.toFixed(1) + ' m' : ''}`}
+                                fontSize={14}  // REDUCED FROM 24
                                 fontStyle="bold"
                                 fill="black"
                                 align="center"
                             />
+                            {/* --- CHANGE END --- */}
                         </Group>
                     ))}
 
