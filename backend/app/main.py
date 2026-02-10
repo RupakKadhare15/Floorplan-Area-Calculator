@@ -1,11 +1,13 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from bson.objectid import ObjectId
 from pydantic import BaseModel
 from typing import List, Optional
 import base64
 import traceback
 import io
+import pandas as pd 
 from pdf2image import convert_from_bytes
 
 # Import your modules
@@ -37,18 +39,21 @@ class UpdateProjectStateModel(BaseModel):
     window_height: Optional[float] = None
     door_height: Optional[float] = None
 
+# --- NEW EXPORT MODEL ---
+class ExportDataModel(BaseModel):
+    rooms: List[dict]
+    summary: dict
+
 @app.post("/upload")
 async def upload_image(
     file: UploadFile = File(...),
-    pdf_page: int = 0 # NEW PARAMETER (Default to first page)
+    pdf_page: int = 0 
 ):
     try:
         content = await file.read()
         b64_image = ""
 
-        # --- NEW: PDF LOGIC ---
         if file.content_type == "application/pdf":
-            # Convert PDF -> Image at 300 DPI (High Res)
             images = convert_from_bytes(
                 content, 
                 dpi=200, 
@@ -57,14 +62,12 @@ async def upload_image(
             )
             
             if images:
-                # Save as JPEG (Quality 85) to be efficient with large 300DPI images
                 img_byte_arr = io.BytesIO()
                 images[0].save(img_byte_arr, format='JPEG', quality=85)
                 b64_image = base64.b64encode(img_byte_arr.getvalue()).decode('utf-8')
             else:
                 raise HTTPException(status_code=400, detail="Could not read PDF page")
         else:
-            # --- STANDARD IMAGE LOGIC ---
             b64_image = base64.b64encode(content).decode('utf-8')
 
         project = {
@@ -73,7 +76,7 @@ async def upload_image(
             "scale_factor": None, 
             "unit": "m",
             "masks": [],
-            "wall_height": 2.4 # Default height
+            "wall_height": 2.4 
         }
         new_project = await project_collection.insert_one(project)
         project["_id"] = str(new_project.inserted_id)
@@ -90,7 +93,6 @@ async def get_project(project_id: str):
         return project
     raise HTTPException(status_code=404, detail="Project not found")
 
-# --- AUTO-SAVE ENDPOINT ---
 @app.put("/project/{project_id}/state")
 async def update_project_state(project_id: str, payload: UpdateProjectStateModel):
     update_data = {}
@@ -128,7 +130,6 @@ async def magic_wand(project_id: str, payload: MagicWandModel):
     image_data = base64.b64decode(project["image_data"])
     target_color = CATEGORY_COLORS.get(payload.category, (0, 0, 255))
     
-    # Returns 3 values now (Mask, Area, Length)
     mask_b64, pixel_area, pixel_length = process_magic_wand(
         image_data, 
         payload.x, 
@@ -144,7 +145,6 @@ async def magic_wand(project_id: str, payload: MagicWandModel):
     if project.get("scale_factor"):
         sf = project["scale_factor"]
         real_area = pixel_area / (sf ** 2)
-        # Convert pixel length to real length (meters)
         real_length = pixel_length / sf
 
     return {
@@ -165,7 +165,6 @@ async def draw_opening(project_id: str, payload: LineToolModel):
     image_data = base64.b64decode(project["image_data"])
     target_color = CATEGORY_COLORS.get(payload.category, (0, 255, 0))
 
-    # Extract existing Wall masks
     wall_masks_bytes = []
     if "masks" in project:
         for m in project["masks"]:
@@ -173,7 +172,6 @@ async def draw_opening(project_id: str, payload: LineToolModel):
                 b64_clean = m["src"].replace("data:image/png;base64,", "")
                 wall_masks_bytes.append(base64.b64decode(b64_clean))
 
-    # Returns 3 values now
     mask_b64, pixel_area, pixel_length = process_linear_opening(
         image_data,
         wall_masks_bytes,
@@ -207,7 +205,6 @@ async def segregate_rooms(project_id: str):
         
     image_data = base64.b64decode(project["image_data"])
     
-    # Separate masks into Wall-type and Opening-type
     wall_masks = []
     opening_masks = []
     
@@ -221,10 +218,8 @@ async def segregate_rooms(project_id: str):
             elif m["category"] in ["Doors", "Windows"]:
                 opening_masks.append(decoded)
 
-    # Process
     rooms = perform_room_segmentation(image_data, wall_masks, opening_masks)
     
-    # Calculate Real Area if scale exists
     sf = project.get("scale_factor")
     if sf:
         for r in rooms:
@@ -232,3 +227,30 @@ async def segregate_rooms(project_id: str):
             r["real_perimeter"] = r.get("pixel_perimeter", 0) / sf
             
     return {"rooms": rooms}
+
+# --- NEW EXPORT ENDPOINT ---
+@app.post("/project/export")
+async def export_excel(data: ExportDataModel):
+    # 1. Prepare Room Data
+    df_rooms = pd.DataFrame(data.rooms)
+    
+    # 2. Prepare Summary Data (Transpose to make it a list of rows for the table)
+    summary_list = [{"Metric": k, "Value": v} for k, v in data.summary.items()]
+    df_summary = pd.DataFrame(summary_list)
+
+    # 3. Write to Excel buffer
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df_rooms.to_excel(writer, sheet_name='Report', startrow=0, index=False)
+        
+        # Add a title for the summary section
+        # We calculate start row based on number of rooms + some padding
+        start_row_summary = len(df_rooms) + 3
+        df_summary.to_excel(writer, sheet_name='Report', startrow=start_row_summary, index=False)
+    
+    output.seek(0)
+    
+    headers = {
+        'Content-Disposition': 'attachment; filename="measurements.xlsx"'
+    }
+    return StreamingResponse(output, headers=headers, media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')

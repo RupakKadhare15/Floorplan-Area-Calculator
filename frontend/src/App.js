@@ -2,7 +2,7 @@ import React, { useState, useEffect } from "react";
 import axios from "axios";
 import Sidebar from "./components/Sidebar";
 import CanvasBoard from "./components/CanvasBoard";
-import { AreaChart, CheckCircle2, LayoutDashboard } from "lucide-react";
+import { AreaChart, CheckCircle2, LayoutDashboard, Download } from "lucide-react"; // Import Download Icon
 import "./App.css";
 
 const API_BASE = process.env.REACT_APP_API_URL || "http://localhost:8000";
@@ -16,12 +16,10 @@ function App() {
   const [masks, setMasks] = useState([]);
   const [rooms, setRooms] = useState([]);
 
-  // --- UPDATED UPLOAD FUNCTION ---
   const handleFileUpload = async (file, pageIndex = 0) => {
     const formData = new FormData();
     formData.append("file", file);
     try {
-      // Pass the PDF page index to the backend
       const response = await axios.post(`${API_BASE}/upload?pdf_page=${pageIndex}`, formData, {
         headers: { "Content-Type": "multipart/form-data" },
       });
@@ -34,10 +32,8 @@ function App() {
     }
   };
 
-  // --- AUTO-SAVE LOGIC ---
   useEffect(() => {
     if (!projectId) return;
-
     const saveData = async () => {
       try {
         await axios.put(`${API_BASE}/project/${projectId}/state`,{ 
@@ -118,9 +114,53 @@ function App() {
 
   const getCount = (cat) => masks.filter(m => m.category === cat).length;
 
+  // --- NEW EXPORT FUNCTION ---
+  const handleExport = async () => {
+    if (!rooms || rooms.length === 0) {
+      alert("Please segregate rooms first before exporting.");
+      return;
+    }
+
+    // 1. Prepare Room Rows
+    const roomRows = rooms.map(room => ({
+      "Room No": room.id,
+      "Inner Wall Area (m²)": parseFloat(getNetRoomWallArea(room)),
+      "Ceiling Area (m²)": parseFloat(room.real_area ? room.real_area.toFixed(2) : 0),
+      "Inner Perimeter (m)": parseFloat(room.real_perimeter ? room.real_perimeter.toFixed(2) : 0)
+    }));
+
+    // 2. Prepare Summary Table
+    const summaryData = {
+      "Total Wall Area (m²)": parseFloat(getTotalNetWallArea()),
+      "Total Ceiling Area (m²)": parseFloat(getCeilingArea()),
+      "Total Door Area (m²)": parseFloat(getArea('Doors')),
+      "Total Window Area (m²)": parseFloat(getArea('Windows'))
+    };
+
+    try {
+      const response = await axios.post(`${API_BASE}/project/export`, {
+        rooms: roomRows,
+        summary: summaryData
+      }, {
+        responseType: 'blob', // Important for file download
+      });
+
+      // Trigger Browser Download
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', 'measurements.xlsx');
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    } catch (err) {
+      console.error("Export failed", err);
+      alert("Failed to export Excel file.");
+    }
+  };
+
   return (
     <div className="app-container">
-      {/* 1. LEFT PANEL */}
       <Sidebar 
         onUpload={handleFileUpload}
         mode={mode}
@@ -137,7 +177,6 @@ function App() {
         onSplitRooms={handleSplitRooms}
       />
 
-      {/* 2. CENTER PANEL */}
       <main className="main-canvas-area">
         {projectData ? (
           <CanvasBoard 
@@ -152,19 +191,26 @@ function App() {
             rooms={rooms}
           />
         ) : (
-          <div className="empty-state">
-            <p>Please upload a floor plan to start</p>
-          </div>
+          <div className="empty-state"><p>Please upload a floor plan</p></div>
         )}
       </main>
 
-      {/* 3. RIGHT PANEL */}
       <aside className="right-panel">
-        <div className="panel-header">
-          {mode === 'segregation' ? (
-             <h2><LayoutDashboard size={18}/> Room List</h2>
-          ) : (
-             <h2><AreaChart size={18}/> Area Report</h2>
+        <div className="panel-header flex justify-between items-center">
+          <h2>
+            {mode === 'segregation' ? <LayoutDashboard size={18}/> : <AreaChart size={18}/>} 
+            {mode === 'segregation' ? " Room List" : " Area Report"}
+          </h2>
+          
+          {/* NEW EXPORT BUTTON */}
+          {mode === 'segregation' && (
+             <button 
+                onClick={handleExport}
+                className="p-1 rounded hover:bg-gray-100 text-blue-600"
+                title="Export to Excel"
+             >
+                <Download size={18} />
+             </button>
           )}
         </div>
         
@@ -179,10 +225,12 @@ function App() {
                    <div key={room.id} className="mini-stat flex justify-between items-center px-4" style={{borderColor: '#e2e8f0'}}>
                      <div className="flex flex-col">
                        <div className="flex items-center gap-2">
-                         <div style={{width:12, height:12, borderRadius:'50%', background: room.color, border: '1px solid rgba(0,0,0,0.1)'}}></div>
+                         <div style={{width:12, height:12, borderRadius:'50%', background: room.color}}></div>
                          <span className="font-bold text-gray-700">{room.id}</span>
                        </div>
                        <span className="text-xs text-gray-500">Wall: {getNetRoomWallArea(room)} m²</span>
+                       <br></br>
+                       <span className="text-xs font-semibold text-blue-600">Perimeter: {room.real_perimeter ? room.real_perimeter.toFixed(2) : 0} m</span>
                      </div>
                      <strong className="text-lg">{room.real_area ? room.real_area.toFixed(2) : 0} m²</strong>
                    </div>

@@ -7,3 +7,4 @@ pillow
 python-multipart
 python-dotenv
 pdf2image
+pandas
