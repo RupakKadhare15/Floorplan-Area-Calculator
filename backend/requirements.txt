@@ -8,3 +8,4 @@ python-multipart
 python-dotenv
 pdf2image
 pandas
+openpyxl
