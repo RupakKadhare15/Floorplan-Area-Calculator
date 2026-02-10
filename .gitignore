@@ -5,6 +5,8 @@
 Thumbs.db
 ehthumbs.db
 Desktop.ini
+test_data/
+locustfile.py
 
 # ========================
 # Secrets & Environment (Critical)
