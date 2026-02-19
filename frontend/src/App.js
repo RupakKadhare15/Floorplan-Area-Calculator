@@ -1,6 +1,3 @@
-
-
-
 import React, { useState, useEffect } from "react";
 import axios from "axios";
 import Sidebar from "./components/Sidebar";
@@ -205,16 +202,17 @@ function App() {
             {mode === 'segregation' ? " Room List" : " Area Report"}
           </h2>
           
-          {/* NEW EXPORT BUTTON */}
-          {mode === 'segregation' && (
+        <br></br>
+          {/* {mode === 'segregation' && ( */}
              <button 
                 onClick={handleExport}
                 className="p-1 rounded hover:bg-gray-100 text-blue-600"
                 title="Export to Excel"
              >
                 <Download size={18} />
+                Download Report
              </button>
-          )}
+          {/* )} */}
         </div>
         
         <div className="stats-content">

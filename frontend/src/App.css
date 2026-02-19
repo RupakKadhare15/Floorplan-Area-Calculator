@@ -139,7 +139,13 @@ body {
   justify-content: center;  /* REQUIRED: HORIZONTAL CENTER */
   position: relative;
   overflow: auto;          /* Allow scroll if image is huge */
-  padding: 40px;
+  height: 100vh;
+}
+
+.stage-container {
+  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+  background: white;
+  display: inline-block;
 }
 
 .empty-state {
