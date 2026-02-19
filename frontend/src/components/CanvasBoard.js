@@ -1,6 +1,3 @@
-
-
-
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { Stage, Layer, Image as KonvaImage, Line, Circle, Text, Group } from 'react-konva';
 import useImage from 'use-image';
@@ -29,7 +26,7 @@ const CanvasBoard = ({
 
     // --- 2. ZOOM & PAN STATE ---
     const [stageScale, setStageScale] = useState(1);
-    const [stagePos, setStagePos] = useState({ x: 0, y: 0 });
+    const [minScale, setMinScale] = useState(0.1);
 
     // --- 3. AUTO-FIT IMAGE ON LOAD ---
     useEffect(() => {
@@ -38,48 +35,30 @@ const CanvasBoard = ({
             const h = window.innerHeight - 50;
             
             // Calculate scale to fit image completely in view
-            const scaleX = w / image.width;
-            const scaleY = h / image.height;
-            const fitScale = Math.min(scaleX, scaleY); 
+            const fitScale = Math.min(w / image.width, h / image.height); 
 
             setStageScale(fitScale);
-            setStagePos({ x: 0, y: 0 }); 
+            setMinScale(fitScale * 0.5); // Allow zooming out a bit further
         }
     }, [image]);
 
-    // --- 4. MOUSE HANDLERS (ZOOM & PAN) ---
+    // --- 4. MOUSE HANDLERS (ZOOM) ---
     const handleWheel = (e) => {
         e.evt.preventDefault();
         const scaleBy = 1.1;
-        const stage = stageRef.current;
-        const oldScale = stage.scaleX();
-        const mousePointTo = {
-            x: stage.getPointerPosition().x / oldScale - stage.x() / oldScale,
-            y: stage.getPointerPosition().y / oldScale - stage.y() / oldScale
-        };
+        const oldScale = stageScale;
+        
+        let newScale = e.evt.deltaY < 0 ? oldScale * scaleBy : oldScale / scaleBy;
 
-        const newScale = e.evt.deltaY < 0 ? oldScale * scaleBy : oldScale / scaleBy;
+        // Zoom Constraints
+        const MAX_SCALE = 5; 
+        if (newScale > MAX_SCALE) newScale = MAX_SCALE;
+        if (newScale < minScale) newScale = minScale;
+        
         setStageScale(newScale);
-
-        const newPos = {
-            x: -(mousePointTo.x - stage.getPointerPosition().x / newScale) * newScale,
-            y: -(mousePointTo.y - stage.getPointerPosition().y / newScale) * newScale
-        };
-        setStagePos(newPos);
     };
 
-    // --- STATE ---
-    const [calibrationLine, setCalibrationLine] = useState([]);
-    const [isDrawing, setIsDrawing] = useState(false);
-    const [eraserPath, setEraserPath] = useState([]); 
-    const [openingLine, setOpeningLine] = useState([]); 
-    const [tolerance] = useState(40);
-
-    const isLinearTool = useMemo(() => {
-        return ['Doors', 'Windows'].includes(selectedCategory) && activeTool === 'wand';
-    }, [selectedCategory, activeTool]);
-
-    // Helper: Get REAL image coordinates (ignoring zoom)
+    // Helper: Get REAL image coordinates (ignoring zoom/scroll)
     const getRelativePointerPosition = (node) => {
         const transform = node.getAbsoluteTransform().copy();
         transform.invert();
@@ -87,7 +66,7 @@ const CanvasBoard = ({
         return transform.point(pos);
     };
 
-    // --- ERASER LOGIC (Unchanged) ---
+    // --- 5. ERASER LOGIC ---
     const applyEraser = async (pathPoints) => {
         if (!pathPoints || pathPoints.length < 2) return;
 
@@ -130,18 +109,26 @@ const CanvasBoard = ({
                     }
                     resolve({ ...mask, src: canvas.toDataURL("image/png"), area: newRealArea, real_length: newRealLength, height: mask.height });
                 };
-                img.onerror = (err) => resolve(mask);
+                img.onerror = () => resolve(mask);
                 img.src = mask.src; 
             });
         }));
         setMasks(updatedMasks);
     };
 
-    // --- MOUSE HANDLERS (DRAWING) ---
+    // --- 6. MOUSE HANDLERS (DRAWING) ---
+    const [calibrationLine, setCalibrationLine] = useState([]);
+    const [isDrawing, setIsDrawing] = useState(false);
+    const [eraserPath, setEraserPath] = useState([]); 
+    const [openingLine, setOpeningLine] = useState([]); 
+    const [tolerance] = useState(40);
+
+    const isLinearTool = useMemo(() => {
+        return ['Doors', 'Windows'].includes(selectedCategory) && activeTool === 'wand';
+    }, [selectedCategory, activeTool]);
+
     const handleMouseDown = (e) => {
         if (mode === 'segregation') return; 
-
-        // CRITICAL CHANGE: Use relative pointer position
         const pos = getRelativePointerPosition(e.target.getStage());
         
         if (mode === 'calibration') {
@@ -161,15 +148,13 @@ const CanvasBoard = ({
     };
 
     const handleMouseMove = (e) => {
-        if (mode === 'segregation') return;
-        
-        // CRITICAL CHANGE: Use relative pointer position
+        if (mode === 'segregation' || !isDrawing) return;
         const pos = getRelativePointerPosition(e.target.getStage());
 
-        if (mode === 'calibration' && isDrawing) {
+        if (mode === 'calibration') {
             setCalibrationLine([calibrationLine[0], calibrationLine[1], pos.x, pos.y]);
         } 
-        else if (mode === 'drawing' && isDrawing) {
+        else if (mode === 'drawing') {
             if (activeTool === 'eraser') {
                 setEraserPath([...eraserPath, pos.x, pos.y]);
             }
@@ -182,12 +167,11 @@ const CanvasBoard = ({
     const handleMouseUp = async (e) => {
         if (mode === 'segregation') return;
         setIsDrawing(false);
-        const pos = getRelativePointerPosition(e.target.getStage()); // Relative pos
 
         if (mode === 'calibration') {
             const [x1, y1, x2, y2] = calibrationLine;
             const pxDist = Math.sqrt(Math.pow(x2 - x1, 2) + Math.pow(y2 - y1, 2));
-            if (pxDist > 5) { // Lower threshold for zoomed out
+            if (pxDist > 10) {
                 const realLen = window.prompt("Enter real length (e.g., 5.0):");
                 if (realLen) {
                     try {
@@ -202,57 +186,38 @@ const CanvasBoard = ({
             setCalibrationLine([]);
         } 
         else if (mode === 'drawing') {
-            const getSpecificHeight = () => {
-                if (['Windows', 'Doors'].includes(selectedCategory)) {
-                    const h = window.prompt(`Enter height for this ${selectedCategory.slice(0, -1)} (m):`, "2.1");
-                    return parseFloat(h) || 0;
-                }
-                return 0; 
-            };
-
             if (activeTool === 'wand') {
                 if (isLinearTool) {
                     const [x1, y1, x2, y2] = openingLine;
-                    const dist = Math.sqrt(Math.pow(x2 - x1, 2) + Math.pow(y2 - y1, 2));
-                    if (dist > 5) {
+                    if (Math.sqrt(Math.pow(x2 - x1, 2) + Math.pow(y2 - y1, 2)) > 5) {
                         try {
                             const res = await axios.post(`${API_BASE}/project/${projectId}/draw-opening`, {
-                                p1: [x1, y1],
-                                p2: [x2, y2],
-                                category: selectedCategory
+                                p1: [x1, y1], p2: [x2, y2], category: selectedCategory
                             });
-                            
-                            const itemHeight = getSpecificHeight();
-
+                            const h = parseFloat(window.prompt(`Enter height (m):`, "2.1")) || 0;
                             setMasks([...masks, { 
                                 src: cleanBase64(res.data.mask_image), 
                                 category: res.data.category, 
-                                area: res.data.real_area,
                                 real_length: res.data.real_length,
-                                height: itemHeight 
+                                height: h 
                             }]);
                         } catch (err) { console.error("Line tool failed:", err); }
                     }
                     setOpeningLine([]);
                 } 
                 else {
+                    const pos = getRelativePointerPosition(e.target.getStage());
                     try {
                         const res = await axios.post(`${API_BASE}/project/${projectId}/magic-wand`, {
                             x: Math.round(pos.x), y: Math.round(pos.y), tolerance, category: selectedCategory
                         });
-
-                        let itemHeight = 0;
-                        if (['Windows', 'Doors'].includes(selectedCategory)) {
-                             const h = window.prompt(`Enter height for this ${selectedCategory.slice(0, -1)} (m):`, "2.1");
-                             itemHeight = parseFloat(h) || 0;
-                        }
-
+                        let h = (['Windows', 'Doors'].includes(selectedCategory)) ? (parseFloat(window.prompt(`Enter height (m):`, "2.1")) || 0) : 0;
                         setMasks([...masks, { 
                             src: cleanBase64(res.data.mask_image), 
                             category: res.data.category, 
-                            area: res.data.real_area,
                             real_length: res.data.real_length,
-                            height: itemHeight 
+                            area: res.data.real_area,
+                            height: h 
                         }]);
                     } catch (err) { console.error("Magic Wand failed:", err); }
                 }
@@ -264,45 +229,41 @@ const CanvasBoard = ({
         }
     };
 
-    // --- RENDER HELPERS ---
+    // --- 7. RENDER HELPERS ---
     const SimpleMask = ({ src, width, height }) => {
         const [img] = useImage(src);
         return img ? <KonvaImage image={img} width={width} height={height} listening={false} /> : null;
     };
 
-    // --- FIX: RESTORED GRID OVERLAY LOGIC ---
     const GridOverlay = () => {
         const sf = projectData?.scale_factor;
         if (!sf || sf <= 10) return null;
-
         const width = image.width;
         const height = image.height;
         const lines = [];
-
-        // Vertical lines
         for (let i = 0; i < width / sf; i++) {
             lines.push(<Line key={`v-${i}`} points={[i * sf, 0, i * sf, height]} stroke="rgba(0, 0, 0, 0.15)" strokeWidth={1} />);
         }
-        // Horizontal lines
         for (let j = 0; j < height / sf; j++) {
             lines.push(<Line key={`h-${j}`} points={[0, j * sf, width, j * sf]} stroke="rgba(0, 0, 0, 0.15)" strokeWidth={1} />);
         }
         return <Group>{lines}</Group>;
     };
 
-    if (!image) return <div>Loading...</div>;
+    if (!image) return <div>Loading floor plan...</div>;
+
+    // Trigger standard browser scrollbars by making stage size match zoomed image
+    const displayWidth = image.width * stageScale;
+    const displayHeight = image.height * stageScale;
 
     return (
-        <div className="border shadow-lg bg-gray-100 overflow-hidden" style={{ width: '100%', height: '100vh' }}>
+        <div className="stage-container">
             <Stage 
-                width={window.innerWidth} 
-                height={window.innerHeight} 
-                draggable={activeTool !== 'wand' && activeTool !== 'eraser' && mode !== 'calibration'} 
-                onWheel={handleWheel}
+                width={displayWidth} 
+                height={displayHeight} 
                 scaleX={stageScale}
                 scaleY={stageScale}
-                x={stagePos.x}
-                y={stagePos.y}
+                onWheel={handleWheel}
                 onMouseDown={handleMouseDown}
                 onMouseMove={handleMouseMove}
                 onMouseUp={handleMouseUp}
@@ -317,29 +278,17 @@ const CanvasBoard = ({
                     {mode === 'segregation' && rooms && rooms.map((room) => (
                         <Group key={room.id}>
                             <SimpleMask src={cleanBase64(room.src)} width={image.width} height={image.height} />
-                            
-                            {/* --- CHANGE START: SMALLER FONT SIZE --- */}
                             <Text 
                                 x={room.center.x - 25} 
                                 y={room.center.y} 
-                                text={`${room.id}\n${room.real_area ? room.real_area.toFixed(1) + ' m²' : ''}\nP: ${room.real_perimeter ? room.real_perimeter.toFixed(1) + ' m' : ''}`}
-                                fontSize={14}  // REDUCED FROM 24
+                                text={`${room.id}\n${room.real_area?.toFixed(1)} m²\nP: ${room.real_perimeter?.toFixed(1)} m`}
+                                fontSize={14 / stageScale}
                                 fontStyle="bold"
                                 fill="black"
                                 align="center"
                                 stroke="white"
-                                strokeWidth={2} // REDUCED FROM 4
+                                strokeWidth={1 / stageScale}
                             />
-                            <Text 
-                                x={room.center.x - 25} 
-                                y={room.center.y} 
-                                text={`${room.id}\n${room.real_area ? room.real_area.toFixed(1) + ' m²' : ''}\nP: ${room.real_perimeter ? room.real_perimeter.toFixed(1) + ' m' : ''}`}
-                                fontSize={14}  // REDUCED FROM 24
-                                fontStyle="bold"
-                                fill="black"
-                                align="center"
-                            />
-                            {/* --- CHANGE END --- */}
                         </Group>
                     ))}
 
@@ -348,31 +297,22 @@ const CanvasBoard = ({
                         <SimpleMask key={i} src={mask.src} width={image.width} height={image.height} />
                     ))}
                     
-                    {/* TOOLS UI */}
+                    {/* HELPERS */}
                     {mode !== 'segregation' && (
                         <>
                             {mode === 'calibration' && calibrationLine.length > 0 && 
-                                <Line points={calibrationLine} stroke="#FF00FF" strokeWidth={5 / stageScale} />
+                                <Line points={calibrationLine} stroke="#FF00FF" strokeWidth={4 / stageScale} />
                             }
                             {isDrawing && activeTool === 'eraser' && 
-                                <Line points={eraserPath} stroke="rgba(255,0,0,0.5)" strokeWidth={30 / stageScale} lineCap="round" lineJoin="round" />
+                                <Line points={eraserPath} stroke="rgba(255,0,0,0.5)" strokeWidth={25 / stageScale} lineCap="round" lineJoin="round" />
                             }
-                            {isDrawing && isLinearTool && openingLine.length > 0 && (
-                                <>
-                                    <Line points={openingLine} stroke={selectedCategory === 'Doors' ? '#00FF00' : '#FFA500'} strokeWidth={5 / stageScale} dash={[10, 5]} />
-                                    <Circle x={openingLine[0]} y={openingLine[1]} radius={5 / stageScale} fill="white" stroke="black" />
-                                    <Circle x={openingLine[2]} y={openingLine[3]} radius={5 / stageScale} fill="white" stroke="black" />
-                                </>
+                            {isDrawing && isLinearTool && (
+                                <Line points={openingLine} stroke={selectedCategory === 'Doors' ? '#00FF00' : '#FFA500'} strokeWidth={4 / stageScale} dash={[10, 5]} />
                             )}
                         </>
                     )}
                 </Layer>
             </Stage>
-            
-            {/* ZOOM HINT */}
-            <div style={{ position: 'absolute', bottom: 20, right: 20, background: 'rgba(0,0,0,0.6)', color: 'white', padding: '10px', borderRadius: '5px', pointerEvents: 'none' }}>
-                Mouse Wheel to Zoom • Drag to Pan (when not drawing)
-            </div>
         </div>
     );
 };
