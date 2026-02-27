@@ -214,18 +214,25 @@ def perform_room_segmentation(image_bytes, wall_mask_bytes_list, open_mask_bytes
         contours, _ = cv2.findContours(blob_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         if not contours: continue
         cnt = contours[0]
-        epsilon = 0.002 * cv2.arcLength(cnt, True) 
-        approx_curve = cv2.approxPolyDP(cnt, epsilon, True)
         
-        pixel_perimeter = cv2.arcLength(approx_curve, True)
+        # Calculate pixel perimeter
+        pixel_perimeter = cv2.arcLength(cnt, True)
+        
+        # --- NEW: CALCULATE WALL COUNT ---
+        # 1.8% epsilon is used to accurately trace room corners while ignoring noise
+        epsilon = 0.018 * pixel_perimeter
+        approx_curve = cv2.approxPolyDP(cnt, epsilon, True)
+        wall_count = len(approx_curve)
 
         clean_mask = np.zeros((h, w), dtype=np.uint8)
         cv2.drawContours(clean_mask, [approx_curve], -1, 255, -1)
         precise_pixel_area = cv2.contourArea(approx_curve)
+        
         color = (random.randint(100, 255), random.randint(100, 255), random.randint(100, 255))
         r, g, b = color
         rgba_room = np.zeros((h, w, 4), dtype=np.uint8)
         rgba_room[clean_mask > 0] = [r, g, b, 150]
+        
         pil_img = Image.fromarray(rgba_room)
         buff = io.BytesIO()
         pil_img.save(buff, format="PNG")
@@ -236,6 +243,7 @@ def perform_room_segmentation(image_bytes, wall_mask_bytes_list, open_mask_bytes
             "src": img_str,
             "pixel_area": precise_pixel_area,
             "pixel_perimeter": pixel_perimeter, 
+            "wall_count": wall_count, # Added wall_count to return object
             "center": {"x": int(centroids[i][0]), "y": int(centroids[i][1])},
             "color": f"rgb({r},{g},{b})"
         })

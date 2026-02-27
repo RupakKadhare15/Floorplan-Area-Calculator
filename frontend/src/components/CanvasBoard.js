@@ -278,15 +278,16 @@ const CanvasBoard = ({
                     {mode === 'segregation' && rooms && rooms.map((room) => (
                         <Group key={room.id}>
                             <SimpleMask src={cleanBase64(room.src)} width={image.width} height={image.height} />
+                            {/* UPDATED: Added Walls to the text label */}
                             <Text 
                                 x={room.center.x - 25} 
                                 y={room.center.y} 
-                                text={`${room.id}\n${room.real_area?.toFixed(1)} m²\nP: ${room.real_perimeter?.toFixed(1)} m`}
+                                text={`${room.id}\n${room.real_area?.toFixed(1)} m²\nP: ${room.real_perimeter?.toFixed(1)} m\nWalls: ${room.wall_count || 0}`}
                                 fontSize={14 / stageScale}
                                 fontStyle="bold"
                                 fill="black"
                                 align="center"
-                                stroke="white"
+                                stroke="black"
                                 strokeWidth={1 / stageScale}
                             />
                         </Group>

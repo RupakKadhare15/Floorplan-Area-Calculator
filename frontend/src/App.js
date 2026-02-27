@@ -2,7 +2,7 @@ import React, { useState, useEffect } from "react";
 import axios from "axios";
 import Sidebar from "./components/Sidebar";
 import CanvasBoard from "./components/CanvasBoard";
-import { AreaChart, CheckCircle2, LayoutDashboard, Download } from "lucide-react"; // Import Download Icon
+import { AreaChart, CheckCircle2, LayoutDashboard, Download } from "lucide-react"; 
 import "./App.css";
 
 const API_BASE = process.env.REACT_APP_API_URL || "http://localhost:8000";
@@ -114,22 +114,19 @@ function App() {
 
   const getCount = (cat) => masks.filter(m => m.category === cat).length;
 
-  // --- NEW EXPORT FUNCTION ---
   const handleExport = async () => {
     if (!rooms || rooms.length === 0) {
       alert("Please segregate rooms first before exporting.");
       return;
     }
-
-    // 1. Prepare Room Rows
     const roomRows = rooms.map(room => ({
       "Room No": room.id,
       "Inner Wall Area (m²)": parseFloat(getNetRoomWallArea(room)),
       "Ceiling Area (m²)": parseFloat(room.real_area ? room.real_area.toFixed(2) : 0),
-      "Inner Perimeter (m)": parseFloat(room.real_perimeter ? room.real_perimeter.toFixed(2) : 0)
+      "Inner Perimeter (m)": parseFloat(room.real_perimeter ? room.real_perimeter.toFixed(2) : 0),
+      "Wall Count": room.wall_count || 0 // Added to export
     }));
 
-    // 2. Prepare Summary Table
     const summaryData = {
       "Total Wall Area (m²)": parseFloat(getTotalNetWallArea()),
       "Total Ceiling Area (m²)": parseFloat(getCeilingArea()),
@@ -142,10 +139,8 @@ function App() {
         rooms: roomRows,
         summary: summaryData
       }, {
-        responseType: 'blob', // Important for file download
+        responseType: 'blob', 
       });
-
-      // Trigger Browser Download
       const url = window.URL.createObjectURL(new Blob([response.data]));
       const link = document.createElement('a');
       link.href = url;
@@ -201,18 +196,14 @@ function App() {
             {mode === 'segregation' ? <LayoutDashboard size={18}/> : <AreaChart size={18}/>} 
             {mode === 'segregation' ? " Room List" : " Area Report"}
           </h2>
-          
-        <br></br>
-          {/* {mode === 'segregation' && ( */}
              <button 
                 onClick={handleExport}
-                className="p-1 rounded hover:bg-gray-100 text-blue-600"
+                className="p-1 rounded hover:bg-gray-100 text-blue-600 flex items-center gap-1 text-xs"
                 title="Export to Excel"
              >
-                <Download size={18} />
+                <Download size={16} />
                 Download Report
              </button>
-          {/* )} */}
         </div>
         
         <div className="stats-content">
@@ -224,16 +215,31 @@ function App() {
                </div>
                {rooms.map(room => (
                    <div key={room.id} className="mini-stat flex justify-between items-center px-4" style={{borderColor: '#e2e8f0'}}>
-                     <div className="flex flex-col">
-                       <div className="flex items-center gap-2">
-                         <div style={{width:12, height:12, borderRadius:'50%', background: room.color}}></div>
-                         <span className="font-bold text-gray-700">{room.id}</span>
+                     <div className="flex flex-col w-full">
+                       <div className="flex justify-between items-center mb-1">
+                         <div className="flex items-center gap-2">
+                            <div style={{width:12, height:12, borderRadius:'50%', background: room.color}}></div>
+                            <span className="font-bold text-gray-700">{room.id}</span>
+                         </div>
+                         <strong className="text-sm">{room.real_area ? room.real_area.toFixed(2) : 0} m²</strong>
                        </div>
-                       <span className="text-xs text-gray-500">Wall: {getNetRoomWallArea(room)} m²</span>
-                       <br></br>
-                       <span className="text-xs font-semibold text-blue-600">Perimeter: {room.real_perimeter ? room.real_perimeter.toFixed(2) : 0} m</span>
+                       
+                       <div className="flex justify-between text-xs text-gray-500">
+                          <span>Wall Area:</span>
+                          <span>{getNetRoomWallArea(room)} m²</span>
+                       </div>
+                       
+                       <div className="flex justify-between text-xs text-gray-500">
+                          <span>Perimeter:</span>
+                          <span>{room.real_perimeter ? room.real_perimeter.toFixed(2) : 0} m</span>
+                       </div>
+
+                       {/* NEW: WALL COUNT DISPLAY */}
+                       <div className="flex justify-between text-xs font-semibold text-blue-600 mt-1 pt-1 border-t border-gray-100">
+                          <span>Wall Count:</span>
+                          <span>{room.wall_count || 0}</span>
+                       </div>
                      </div>
-                     <strong className="text-lg">{room.real_area ? room.real_area.toFixed(2) : 0} m²</strong>
                    </div>
                ))}
              </div>
