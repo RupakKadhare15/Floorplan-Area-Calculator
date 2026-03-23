@@ -1,320 +1,582 @@
-import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { Stage, Layer, Image as KonvaImage, Line, Circle, Text, Group } from 'react-konva';
-import useImage from 'use-image';
-import axios from 'axios';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
+import axios from "axios";
+import * as pdfjsLib from "pdfjs-dist/build/pdf";
+import pdfjsWorker from "pdfjs-dist/build/pdf.worker.entry";
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
-const CanvasBoard = ({ 
-  mode, projectId, projectData, setProjectData, 
-  activeTool, selectedCategory, masks, setMasks,
-  rooms 
+const API = process.env.REACT_APP_API_URL || "http://localhost:8000";
+const RENDER_SCALE = 1.5;
+
+const COLORS = {
+  Walls:   { stroke: "#1d4ed8", fill: "rgba(29,78,216,0.55)", glow: "rgba(29,78,216,0.35)" },
+  Doors:   { stroke: "#15803d", fill: "rgba(21,128,61,0.55)", glow: "rgba(21,128,61,0.35)" },
+  Windows: { stroke: "#c2410c", fill: "rgba(194,65,12,0.55)", glow: "rgba(194,65,12,0.35)" },
+};
+
+const CanvasBoard = ({
+  projectId, projectData, setProjectData,
+  mode, setMode, activeTool, setActiveTool, selectedCategory,
+  masks, addMask, updateMask, rooms, autoDetectResult, setAutoDetectResult,
 }) => {
-    const API_BASE = process.env.REACT_APP_API_URL || "http://localhost:8000";
-    const stageRef = useRef(null);
+  const canvasRef = useRef(null);
+  const containerRef = useRef(null);
+  const [pageInfo, setPageInfo] = useState(null);
+  const [zoom, setZoom] = useState(1);
+  const [fitZoom, setFitZoom] = useState(1);  // zoom level that fits PDF in viewport
+  const [loading, setLoading] = useState(false);
 
-    // --- 1. SETUP IMAGE ---
-    const cleanBase64 = (data) => {
-        if (!data) return null;
-        let clean = data.replace(/^data:image\/\w+;base64,/, '').replace(/(\r\n|\n|\r)/gm, "");
-        return `data:image/png;base64,${clean}`;
+  // AI Wand state
+  const [posPoints, setPosPoints] = useState([]);
+  const [negPoints, setNegPoints] = useState([]);
+  const [previewMask, setPreviewMask] = useState(null);
+  const [previewSvg, setPreviewSvg] = useState(null);
+  const [samMasks, setSamMasks] = useState([]);
+  const [selectedMaskIdx, setSelectedMaskIdx] = useState(null);
+
+  // Manual Polyline state
+  const [polyPoints, setPolyPoints] = useState([]);
+  const [mousePos, setMousePos] = useState(null);
+
+  // Draw state
+  const [isDrawing, setIsDrawing] = useState(false);
+  const [calibLine, setCalibLine] = useState([]);
+  const [eraserPath, setEraserPath] = useState([]);
+  const [openingLine, setOpeningLine] = useState([]);
+
+  // FIX ISSUE 6: show/hide auto-detect overlays
+  const [showAutoDetect, setShowAutoDetect] = useState(true);
+
+  const isLinearTool = useMemo(
+    () => ["Doors", "Windows"].includes(selectedCategory) && activeTool === "wand",
+    [selectedCategory, activeTool]
+  );
+
+  // Reset on mode/tool change
+  useEffect(() => {
+    setPosPoints([]); setNegPoints([]);
+    setPreviewMask(null); setPreviewSvg(null);
+    setSamMasks([]); setSelectedMaskIdx(null);
+    setPolyPoints([]); setMousePos(null);
+  }, [mode, selectedCategory, activeTool]);
+
+  // Show auto-detect when new result arrives
+  useEffect(() => {
+    if (autoDetectResult) setShowAutoDetect(true);
+  }, [autoDetectResult]);
+
+  // ── FIX ISSUE 16: Render PDF with correct page number ──
+  useEffect(() => {
+    if (!projectId) return;
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      try {
+        const pdf = await pdfjsLib.getDocument(`${API}/pdf/${projectId}`).promise;
+        const pageNum = (projectData?.page_num || 0) + 1;  // FIX: was hardcoded to 1
+        const page = await pdf.getPage(Math.min(pageNum, pdf.numPages));
+        const vp = page.getViewport({ scale: RENDER_SCALE });
+        const vp1 = page.getViewport({ scale: 1 });
+        if (cancelled) return;
+        setPageInfo({ width: vp1.width, height: vp1.height });
+        const canvas = canvasRef.current;
+        canvas.width = vp.width; canvas.height = vp.height;
+        await page.render({ canvasContext: canvas.getContext("2d"), viewport: vp }).promise;
+        const aw = window.innerWidth - 580, ah = window.innerHeight - 40;
+        const fit = Math.min(aw / vp.width, ah / vp.height, 1);
+        setFitZoom(fit);
+        setZoom(fit);  // Start at fit-to-screen
+      } catch (err) { console.error("PDF render:", err); }
+      setLoading(false);
+    })();
+    return () => { cancelled = true; };
+  }, [projectId, projectData?.page_num]);
+
+  const screenToNorm = useCallback((e) => {
+    if (!canvasRef.current) return { x: 0, y: 0 };
+    const rect = canvasRef.current.getBoundingClientRect();
+    return {
+      x: (e.clientX - rect.left) / zoom / RENDER_SCALE,
+      y: (e.clientY - rect.top) / zoom / RENDER_SCALE,
     };
+  }, [zoom]);
 
-    const imageSrc = useMemo(() => 
-        projectData?.image_data ? cleanBase64(projectData.image_data) : null, 
-    [projectData]);
+  // SAM/hybrid query
+  const querySAM = useCallback(async (pos, neg, maskIdx = null) => {
+    if (!projectId || pos.length === 0) return;
+    setLoading(true);
+    try {
+      const res = await axios.post(`${API}/project/${projectId}/hybrid-select`, {
+        pos_points: pos.map(p => [p.x, p.y]),
+        neg_points: neg.length > 0 ? neg.map(p => [p.x, p.y]) : null,
+        category: selectedCategory, mask_index: maskIdx,
+      });
+      setPreviewMask(res.data);
+      setPreviewSvg(res.data.svg_groups || []);
+      setSamMasks(res.data.all_masks || []);
+      if (maskIdx === null) setSelectedMaskIdx(null);
+    } catch (err) { console.error("Hybrid-select failed:", err); }
+    setLoading(false);
+  }, [projectId, selectedCategory]);
 
-    const [image] = useImage(imageSrc);
+  // Zoom bounds: 50% to 200% of fit-to-screen size
+  const minZoom = fitZoom * 0.5;
+  const maxZoom = fitZoom * 2.0;
 
-    // --- 2. ZOOM & PAN STATE ---
-    const [stageScale, setStageScale] = useState(1);
-    const [minScale, setMinScale] = useState(0.1);
+  const handleWheel = useCallback((e) => {
+    e.preventDefault();
+    setZoom(z => {
+      const next = z * (e.deltaY < 0 ? 1.1 : 1 / 1.1);
+      return Math.max(minZoom, Math.min(maxZoom, next));
+    });
+  }, [minZoom, maxZoom]);
 
-    // --- 3. AUTO-FIT IMAGE ON LOAD ---
-    useEffect(() => {
-        if (image) {
-            const w = window.innerWidth - 300; // Subtract sidebar width
-            const h = window.innerHeight - 50;
-            
-            // Calculate scale to fit image completely in view
-            const fitScale = Math.min(w / image.width, h / image.height); 
+  // ── Mouse handlers ──
+  const handleMouseDown = (e) => {
+    if (mode === "segregation") return;
+    const pos = screenToNorm(e);
+    if (mode === "calibration") {
+      setIsDrawing(true); setCalibLine([pos.x, pos.y, pos.x, pos.y]);
+    } else if (mode === "drawing" && activeTool === "eraser") {
+      setIsDrawing(true); setEraserPath([pos.x, pos.y]);
+    } else if (mode === "drawing" && isLinearTool) {
+      setIsDrawing(true); setOpeningLine([pos.x, pos.y, pos.x, pos.y]);
+    }
+  };
 
-            setStageScale(fitScale);
-            setMinScale(fitScale * 0.5); // Allow zooming out a bit further
-        }
-    }, [image]);
+  const handleMouseMove = (e) => {
+    if (mode === "drawing" && activeTool === "linear" && polyPoints.length > 0) {
+      setMousePos(screenToNorm(e));
+    }
+    if (!isDrawing) return;
+    const pos = screenToNorm(e);
+    if (mode === "calibration") setCalibLine(p => [p[0], p[1], pos.x, pos.y]);
+    else if (activeTool === "eraser") setEraserPath(p => [...p, pos.x, pos.y]);
+    else if (isLinearTool) setOpeningLine(p => [p[0], p[1], pos.x, pos.y]);
+  };
 
-    // --- 4. MOUSE HANDLERS (ZOOM) ---
-    const handleWheel = (e) => {
-        e.evt.preventDefault();
-        const scaleBy = 1.1;
-        const oldScale = stageScale;
-        
-        let newScale = e.evt.deltaY < 0 ? oldScale * scaleBy : oldScale / scaleBy;
+  const handleMouseUp = async (e) => {
+    if (mode === "segregation") return;
+    setIsDrawing(false);
 
-        // Zoom Constraints
-        const MAX_SCALE = 5; 
-        if (newScale > MAX_SCALE) newScale = MAX_SCALE;
-        if (newScale < minScale) newScale = minScale;
-        
-        setStageScale(newScale);
-    };
-
-    // Helper: Get REAL image coordinates (ignoring zoom/scroll)
-    const getRelativePointerPosition = (node) => {
-        const transform = node.getAbsoluteTransform().copy();
-        transform.invert();
-        const pos = node.getStage().getPointerPosition();
-        return transform.point(pos);
-    };
-
-    // --- 5. ERASER LOGIC ---
-    const applyEraser = async (pathPoints) => {
-        if (!pathPoints || pathPoints.length < 2) return;
-
-        const updatedMasks = await Promise.all(masks.map(async (mask) => {
-            if (mask.category !== selectedCategory) return mask;
-
-            return new Promise((resolve) => {
-                const img = new Image();
-                img.onload = () => {
-                    const canvas = document.createElement('canvas');
-                    canvas.width = img.naturalWidth || img.width;
-                    canvas.height = img.naturalHeight || img.height;
-                    const ctx = canvas.getContext('2d');
-                    ctx.drawImage(img, 0, 0);
-                    ctx.globalCompositeOperation = 'destination-out';
-                    ctx.beginPath();
-                    ctx.moveTo(pathPoints[0], pathPoints[1]);
-                    for (let i = 2; i < pathPoints.length; i += 2) {
-                        ctx.lineTo(pathPoints[i], pathPoints[i + 1]);
-                    }
-                    ctx.lineCap = 'round';
-                    ctx.lineJoin = 'round';
-                    ctx.lineWidth = 20; 
-                    ctx.stroke();
-                    ctx.globalCompositeOperation = 'source-over'; 
-                    
-                    const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-                    const data = imgData.data;
-                    let pixelCount = 0;
-                    for (let i = 3; i < data.length; i += 4) { if (data[i] > 0) pixelCount++; }
-
-                    let newRealArea = 0;
-                    if (projectData && projectData.scale_factor && projectData.scale_factor > 0) {
-                        newRealArea = pixelCount / Math.pow(projectData.scale_factor, 2);
-                    }
-                    let newRealLength = mask.real_length || 0;
-                    if (mask.area > 0 && newRealArea < mask.area) {
-                        const ratio = newRealArea / mask.area;
-                        newRealLength = newRealLength * ratio;
-                    }
-                    resolve({ ...mask, src: canvas.toDataURL("image/png"), area: newRealArea, real_length: newRealLength, height: mask.height });
-                };
-                img.onerror = () => resolve(mask);
-                img.src = mask.src; 
+    // Calibration
+    if (mode === "calibration") {
+      const [x0, y0, x1, y1] = calibLine;
+      const dist = Math.hypot(x1 - x0, y1 - y0);
+      if (dist > 5) {
+        const rl = window.prompt("Enter the real-world length (e.g. 5.0):");
+        if (rl) {
+          try {
+            const res = await axios.post(`${API}/project/${projectId}/calibrate`, {
+              px_distance: dist, real_length: parseFloat(rl),
             });
-        }));
-        setMasks(updatedMasks);
-    };
+            setProjectData(p => ({ ...p, ...res.data }));
+            setMode("drawing");
+          } catch { alert("Calibration failed"); }
+        }
+      }
+      setCalibLine([]); return;
+    }
 
-    // --- 6. MOUSE HANDLERS (DRAWING) ---
-    const [calibrationLine, setCalibrationLine] = useState([]);
-    const [isDrawing, setIsDrawing] = useState(false);
-    const [eraserPath, setEraserPath] = useState([]); 
-    const [openingLine, setOpeningLine] = useState([]); 
-    const [tolerance] = useState(40);
+    if (mode !== "drawing") return;
 
-    const isLinearTool = useMemo(() => {
-        return ['Doors', 'Windows'].includes(selectedCategory) && activeTool === 'wand';
-    }, [selectedCategory, activeTool]);
+    // AI Wand click
+    if (activeTool === "wand" && !isLinearTool) {
+      const pos = screenToNorm(e);
+      if (e.shiftKey) {
+        const n = [...negPoints, pos]; setNegPoints(n);
+        querySAM(posPoints, n, selectedMaskIdx);
+      } else {
+        const p = [...posPoints, pos]; setPosPoints(p);
+        querySAM(p, negPoints, selectedMaskIdx);
+      }
+      return;
+    }
 
-    const handleMouseDown = (e) => {
-        if (mode === 'segregation') return; 
-        const pos = getRelativePointerPosition(e.target.getStage());
+    // Opening line tool
+    if (isLinearTool && openingLine.length === 4) {
+      const [x0, y0, x1, y1] = openingLine;
+      if (Math.hypot(x1 - x0, y1 - y0) > 3) {
+        try {
+          const res = await axios.post(`${API}/project/${projectId}/draw-opening`, {
+            p1: [x0, y0], p2: [x1, y1], category: selectedCategory,
+          });
+          const h = parseFloat(window.prompt("Height (m):", "2.1")) || 0;
+          addMask({
+            ...res.data, height: h,
+            src: res.data.mask_image ? `data:image/png;base64,${res.data.mask_image}` : "",
+          });
+        } catch (err) { console.error(err); }
+      }
+      setOpeningLine([]); return;
+    }
+
+    // ── FIX BUG 2: Eraser actually calls the backend ──
+    if (activeTool === "eraser" && eraserPath.length >= 4) {
+      // Find masks with edge_indices to erase from (hybrid-select masks)
+      let erased = false;
+      for (let i = masks.length - 1; i >= 0; i--) {
+        const mask = masks[i];
+        if (mask.category !== selectedCategory) continue;
         
-        if (mode === 'calibration') {
-            setIsDrawing(true);
-            setCalibrationLine([pos.x, pos.y, pos.x, pos.y]);
-        } 
-        else if (mode === 'drawing') {
-            if (activeTool === 'eraser') {
-                setIsDrawing(true);
-                setEraserPath([pos.x, pos.y]);
-            } 
-            else if (isLinearTool) {
-                setIsDrawing(true);
-                setOpeningLine([pos.x, pos.y, pos.x, pos.y]);
+        // Only erase from masks that have edge_indices (vector-based)
+        if (mask.edge_indices && mask.edge_indices.length > 0) {
+          try {
+            const res = await axios.post(`${API}/project/${projectId}/erase`, {
+              mask_index: i,
+              eraser_points: eraserPath,
+              radius: 8.0,
+            });
+            if (res.data.edge_indices) {
+              updateMask(i, {
+                svg_groups: res.data.svg_groups || [],
+                edge_indices: res.data.edge_indices,
+                edge_count: res.data.edge_count,
+                real_length: res.data.real_length,
+                total_length_pts: res.data.total_length_pts,
+              });
+              erased = true;
             }
+          } catch (err) { console.error("Erase failed:", err); }
         }
+        // For raster masks (src/mask_b64), we can't partially erase — skip
+      }
+      
+      if (!erased) {
+        console.log("No erasable masks found for category:", selectedCategory);
+      }
+      setEraserPath([]);
+    }
+  };
+
+  // Manual Polyline: single click
+  const handleClick = (e) => {
+    if (mode !== "drawing" || activeTool !== "linear") return;
+    setPolyPoints(p => [...p, screenToNorm(e)]);
+  };
+
+  // Manual Polyline: double-click finishes
+  const handleDoubleClick = (e) => {
+    if (mode !== "drawing" || activeTool !== "linear") return;
+    e.preventDefault(); finishPolyline();
+  };
+
+  // Keyboard
+  useEffect(() => {
+    const h = (e) => {
+      if (activeTool !== "linear") return;
+      if (e.key === "Enter" && polyPoints.length >= 2) finishPolyline();
+      else if (e.key === "Escape") { setPolyPoints([]); setMousePos(null); }
+      else if (e.key === "z" && (e.ctrlKey || e.metaKey) && polyPoints.length > 0) {
+        e.preventDefault(); setPolyPoints(p => p.slice(0, -1));
+      }
     };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, [activeTool, polyPoints]);
 
-    const handleMouseMove = (e) => {
-        if (mode === 'segregation' || !isDrawing) return;
-        const pos = getRelativePointerPosition(e.target.getStage());
+  const finishPolyline = () => {
+    if (polyPoints.length < 2) return;
+    let totalPx = 0;
+    for (let i = 0; i < polyPoints.length - 1; i++)
+      totalPx += Math.hypot(polyPoints[i+1].x - polyPoints[i].x, polyPoints[i+1].y - polyPoints[i].y);
+    const sf = projectData?.scale_factor;
+    const rl = sf ? totalPx / sf : null;
+    const h = parseFloat(window.prompt(
+      `Length: ${rl ? rl.toFixed(2) + " m" : totalPx.toFixed(0) + " pts"}\nWall height (m):`,
+      projectData?.wall_height || "2.4"
+    )) || 0;
 
-        if (mode === 'calibration') {
-            setCalibrationLine([calibrationLine[0], calibrationLine[1], pos.x, pos.y]);
-        } 
-        else if (mode === 'drawing') {
-            if (activeTool === 'eraser') {
-                setEraserPath([...eraserPath, pos.x, pos.y]);
-            }
-            else if (isLinearTool) {
-                setOpeningLine([openingLine[0], openingLine[1], pos.x, pos.y]);
-            }
-        }
-    };
+    const pts = polyPoints.map(p => `${p.x},${p.y}`).join(" ");
+    addMask({
+      category: selectedCategory,
+      real_length: rl,
+      height: h,
+      polyline_points: pts,
+      manual: true,
+      src: "", svg_groups: [], edge_indices: [],
+    });
+    setPolyPoints([]); setMousePos(null);
+  };
 
-    const handleMouseUp = async (e) => {
-        if (mode === 'segregation') return;
-        setIsDrawing(false);
+  const confirmSelection = () => {
+    if (!previewMask) return;
+    addMask({
+      svg_groups: previewSvg || [],
+      edge_indices: previewMask.edge_indices || [],
+      edge_count: previewMask.edge_count || 0,
+      total_length_pts: previewMask.total_length_pts || 0,
+      real_length: previewMask.real_length,
+      category: selectedCategory,
+      height: 0,
+      mask_b64: previewMask.mask_b64 || "",
+      src: previewMask.mask_b64 ? `data:image/png;base64,${previewMask.mask_b64}` : "",
+    });
+    setPosPoints([]); setNegPoints([]);
+    setPreviewMask(null); setPreviewSvg(null);
+    setSamMasks([]); setSelectedMaskIdx(null);
+  };
 
-        if (mode === 'calibration') {
-            const [x1, y1, x2, y2] = calibrationLine;
-            const pxDist = Math.sqrt(Math.pow(x2 - x1, 2) + Math.pow(y2 - y1, 2));
-            if (pxDist > 10) {
-                const realLen = window.prompt("Enter real length (e.g., 5.0):");
-                if (realLen) {
-                    try {
-                        const res = await axios.post(`${API_BASE}/project/${projectId}/calibrate`, { 
-                            px_distance: pxDist, 
-                            real_length: parseFloat(realLen) 
-                        });
-                        setProjectData(prev => ({ ...prev, ...res.data }));
-                    } catch (err) { alert("Error calibrating."); }
-                }
-            }
-            setCalibrationLine([]);
-        } 
-        else if (mode === 'drawing') {
-            if (activeTool === 'wand') {
-                if (isLinearTool) {
-                    const [x1, y1, x2, y2] = openingLine;
-                    if (Math.sqrt(Math.pow(x2 - x1, 2) + Math.pow(y2 - y1, 2)) > 5) {
-                        try {
-                            const res = await axios.post(`${API_BASE}/project/${projectId}/draw-opening`, {
-                                p1: [x1, y1], p2: [x2, y2], category: selectedCategory
-                            });
-                            const h = parseFloat(window.prompt(`Enter height (m):`, "2.1")) || 0;
-                            setMasks([...masks, { 
-                                src: cleanBase64(res.data.mask_image), 
-                                category: res.data.category, 
-                                real_length: res.data.real_length,
-                                height: h 
-                            }]);
-                        } catch (err) { console.error("Line tool failed:", err); }
-                    }
-                    setOpeningLine([]);
-                } 
-                else {
-                    const pos = getRelativePointerPosition(e.target.getStage());
-                    try {
-                        const res = await axios.post(`${API_BASE}/project/${projectId}/magic-wand`, {
-                            x: Math.round(pos.x), y: Math.round(pos.y), tolerance, category: selectedCategory
-                        });
-                        let h = (['Windows', 'Doors'].includes(selectedCategory)) ? (parseFloat(window.prompt(`Enter height (m):`, "2.1")) || 0) : 0;
-                        setMasks([...masks, { 
-                            src: cleanBase64(res.data.mask_image), 
-                            category: res.data.category, 
-                            real_length: res.data.real_length,
-                            area: res.data.real_area,
-                            height: h 
-                        }]);
-                    } catch (err) { console.error("Magic Wand failed:", err); }
-                }
-            } 
-            else if (activeTool === 'eraser') {
-                await applyEraser(eraserPath);
-                setEraserPath([]); 
-            }
-        }
-    };
+  const cancelSelection = () => {
+    setPosPoints([]); setNegPoints([]);
+    setPreviewMask(null); setPreviewSvg(null);
+    setSamMasks([]); setSelectedMaskIdx(null);
+  };
 
-    // --- 7. RENDER HELPERS ---
-    const SimpleMask = ({ src, width, height }) => {
-        const [img] = useImage(src);
-        return img ? <KonvaImage image={img} width={width} height={height} listening={false} /> : null;
-    };
+  const handleContextMenu = (e) => e.preventDefault();
 
-    const GridOverlay = () => {
-        const sf = projectData?.scale_factor;
-        if (!sf || sf <= 10) return null;
-        const width = image.width;
-        const height = image.height;
-        const lines = [];
-        for (let i = 0; i < width / sf; i++) {
-            lines.push(<Line key={`v-${i}`} points={[i * sf, 0, i * sf, height]} stroke="rgba(0, 0, 0, 0.15)" strokeWidth={1} />);
-        }
-        for (let j = 0; j < height / sf; j++) {
-            lines.push(<Line key={`h-${j}`} points={[0, j * sf, width, j * sf]} stroke="rgba(0, 0, 0, 0.15)" strokeWidth={1} />);
-        }
-        return <Group>{lines}</Group>;
-    };
+  const pw = pageInfo?.width || 1;
+  const ph = pageInfo?.height || 1;
+  const canvasW = (pageInfo?.width || 800) * RENDER_SCALE;
+  const canvasH = (pageInfo?.height || 600) * RENDER_SCALE;
 
-    if (!image) return <div>Loading floor plan...</div>;
+  if (!projectId) return null;
 
-    // Trigger standard browser scrollbars by making stage size match zoomed image
-    const displayWidth = image.width * stageScale;
-    const displayHeight = image.height * stageScale;
+  const polyLength = () => {
+    if (polyPoints.length < 2) return null;
+    let t = 0;
+    for (let i = 0; i < polyPoints.length - 1; i++)
+      t += Math.hypot(polyPoints[i+1].x - polyPoints[i].x, polyPoints[i+1].y - polyPoints[i].y);
+    const sf = projectData?.scale_factor;
+    return sf ? (t / sf).toFixed(2) + " m" : t.toFixed(0) + " pts";
+  };
 
-    return (
-        <div className="stage-container">
-            <Stage 
-                width={displayWidth} 
-                height={displayHeight} 
-                scaleX={stageScale}
-                scaleY={stageScale}
-                onWheel={handleWheel}
-                onMouseDown={handleMouseDown}
-                onMouseMove={handleMouseMove}
-                onMouseUp={handleMouseUp}
-                ref={stageRef}
-            >
-                <Layer>
-                    <KonvaImage image={image} />
-                    
-                    {mode !== 'calibration' && <GridOverlay />}
+  return (
+    <div ref={containerRef} className="canvas-scroll-container" onWheel={handleWheel}>
+      <div className="canvas-sizer" style={{ width: canvasW * zoom, height: canvasH * zoom }}>
+        <div className="canvas-zoom-wrapper"
+          style={{
+            transform: `scale(${zoom})`,
+            transformOrigin: "0 0",
+            width: canvasW,
+            height: canvasH,
+          }}>
+        <canvas ref={canvasRef} style={{ display: "block" }}
+          onMouseDown={handleMouseDown} onMouseMove={handleMouseMove} onMouseUp={handleMouseUp}
+          onClick={handleClick} onDoubleClick={handleDoubleClick} onContextMenu={handleContextMenu} />
 
-                    {/* SEGREGATION MODE */}
-                    {mode === 'segregation' && rooms && rooms.map((room) => (
-                        <Group key={room.id}>
-                            <SimpleMask src={cleanBase64(room.src)} width={image.width} height={image.height} />
-                            <Text 
-                                x={room.center.x - 25} 
-                                y={room.center.y} 
-                                text={`${room.id}\n${room.real_area?.toFixed(1)} m²\nP: ${room.real_perimeter?.toFixed(1)} m`}
-                                fontSize={14 / stageScale}
-                                fontStyle="bold"
-                                fill="black"
-                                align="center"
-                                stroke="white"
-                                strokeWidth={1 / stageScale}
-                            />
-                        </Group>
-                    ))}
+        <svg className="svg-overlay" viewBox={`0 0 ${pw} ${ph}`} preserveAspectRatio="none"
+          style={{ width: canvasW, height: canvasH }}>
 
-                    {/* DRAWING MODE */}
-                    {mode !== 'segregation' && masks.map((mask, i) => (
-                        <SimpleMask key={i} src={mask.src} width={image.width} height={image.height} />
-                    ))}
-                    
-                    {/* HELPERS */}
-                    {mode !== 'segregation' && (
-                        <>
-                            {mode === 'calibration' && calibrationLine.length > 0 && 
-                                <Line points={calibrationLine} stroke="#FF00FF" strokeWidth={4 / stageScale} />
-                            }
-                            {isDrawing && activeTool === 'eraser' && 
-                                <Line points={eraserPath} stroke="rgba(255,0,0,0.5)" strokeWidth={25 / stageScale} lineCap="round" lineJoin="round" />
-                            }
-                            {isDrawing && isLinearTool && (
-                                <Line points={openingLine} stroke={selectedCategory === 'Doors' ? '#00FF00' : '#FFA500'} strokeWidth={4 / stageScale} dash={[10, 5]} />
-                            )}
-                        </>
-                    )}
-                </Layer>
-            </Stage>
+          {/* ── Confirmed masks: polylines ── */}
+          {mode !== "segregation" && masks.map((mask, mi) => {
+            if (!mask.polyline_points) return null;
+            const c = COLORS[mask.category] || COLORS.Walls;
+            return (
+              <polyline key={`poly-${mi}`} points={mask.polyline_points}
+                stroke={c.stroke} strokeWidth={4} strokeLinecap="round"
+                strokeLinejoin="round" fill="none" opacity={0.9} />
+            );
+          })}
+
+          {/* ── Confirmed masks: SVG groups (hybrid-select) ── */}
+          {mode !== "segregation" && masks.map((mask, mi) => {
+            if (!mask.svg_groups?.length) return null;
+            const c = COLORS[mask.category] || COLORS.Walls;
+            return (
+              <g key={`svg-${mi}`}>
+                {mask.svg_groups.map((g, gi) => (
+                  <path key={`glow-${gi}`} d={g.d}
+                    stroke={c.glow} strokeWidth={Math.max(g.strokeWidth * 8, 10)}
+                    strokeLinecap="round" strokeLinejoin="round" fill="none" opacity={0.6} />
+                ))}
+                {mask.svg_groups.map((g, gi) => (
+                  <path key={`core-${gi}`} d={g.d}
+                    stroke={c.stroke} strokeWidth={Math.max(g.strokeWidth * 2.5, 3)}
+                    strokeLinecap="round" strokeLinejoin="round" fill="none" opacity={0.9} />
+                ))}
+              </g>
+            );
+          })}
+
+          {/* ── Confirmed masks: raster images (magic-wand, auto-detect) ── */}
+          {mode !== "segregation" && masks.map((mask, mi) => {
+            if (mask.polyline_points || mask.svg_groups?.length) return null;
+            const imgSrc = mask.mask_b64
+              ? `data:image/png;base64,${mask.mask_b64}`
+              : mask.src;
+            if (!imgSrc) return null;
+            return (
+              <image key={`raster-${mi}`} href={imgSrc}
+                x="0" y="0" width={pw} height={ph}
+                preserveAspectRatio="none" opacity={0.5} />
+            );
+          })}
+
+          {/* ── AI Wand preview ── */}
+          {mode === "drawing" && activeTool === "wand" && !isLinearTool && previewMask?.mask_b64 && (
+            <image href={`data:image/png;base64,${previewMask.mask_b64}`}
+              x="0" y="0" width={pw} height={ph} preserveAspectRatio="none" opacity={0.45} />
+          )}
+          {mode === "drawing" && activeTool === "wand" && !isLinearTool && previewSvg && (
+            <g opacity={0.85}>
+              {previewSvg.map((g, gi) => (
+                <path key={`pv-${gi}`} d={g.d}
+                  stroke={COLORS[selectedCategory]?.stroke}
+                  strokeWidth={Math.max(g.strokeWidth * 2.5, 3)}
+                  strokeLinecap="round" strokeLinejoin="round" fill="none"
+                  strokeDasharray="8 4" />
+              ))}
+            </g>
+          )}
+
+          {/* ── AI point markers ── */}
+          {posPoints.map((p, i) => (
+            <circle key={`pos-${i}`} cx={p.x} cy={p.y} r={6 / zoom}
+              fill="#22c55e" stroke="white" strokeWidth={1.5 / zoom} />
+          ))}
+          {negPoints.map((p, i) => (
+            <circle key={`neg-${i}`} cx={p.x} cy={p.y} r={6 / zoom}
+              fill="#ef4444" stroke="white" strokeWidth={1.5 / zoom} />
+          ))}
+
+          {/* ── Manual Polyline: completed segments ── */}
+          {polyPoints.length >= 2 && (
+            <polyline points={polyPoints.map(p => `${p.x},${p.y}`).join(" ")}
+              stroke={COLORS[selectedCategory]?.stroke || "#1d4ed8"}
+              strokeWidth={3 / zoom} strokeLinecap="round" strokeLinejoin="round"
+              fill="none" opacity={0.9} />
+          )}
+          {/* Rubber band */}
+          {polyPoints.length > 0 && mousePos && (
+            <line x1={polyPoints[polyPoints.length - 1].x} y1={polyPoints[polyPoints.length - 1].y}
+              x2={mousePos.x} y2={mousePos.y}
+              stroke={COLORS[selectedCategory]?.stroke}
+              strokeWidth={2 / zoom} strokeDasharray={`${6/zoom} ${4/zoom}`} opacity={0.7} />
+          )}
+          {/* Vertex dots */}
+          {polyPoints.map((p, i) => (
+            <circle key={`vx-${i}`} cx={p.x} cy={p.y} r={4 / zoom}
+              fill="white" stroke={COLORS[selectedCategory]?.stroke}
+              strokeWidth={2 / zoom} />
+          ))}
+          {/* Segment lengths */}
+          {polyPoints.length >= 2 && polyPoints.map((p, i) => {
+            if (i === 0) return null;
+            const prev = polyPoints[i - 1];
+            const d = Math.hypot(p.x - prev.x, p.y - prev.y);
+            const sf = projectData?.scale_factor;
+            const label = sf ? (d / sf).toFixed(2) + "m" : d.toFixed(0);
+            const mx = (p.x + prev.x) / 2, my = (p.y + prev.y) / 2;
+            return (
+              <g key={`len-${i}`}>
+                <rect x={mx - 22/zoom} y={my - 9/zoom} width={44/zoom} height={16/zoom}
+                  rx={3/zoom} fill="rgba(0,0,0,0.75)" />
+                <text x={mx} y={my + 3/zoom} textAnchor="middle"
+                  fontSize={10/zoom} fill="white" fontWeight="bold">{label}</text>
+              </g>
+            );
+          })}
+
+          {/* ── FIX ISSUE 6: Auto-detect overlays (dismissible) ── */}
+          {showAutoDetect && autoDetectResult?.walls?.mask_b64 && (
+            <image href={`data:image/png;base64,${autoDetectResult.walls.mask_b64}`}
+              x="0" y="0" width={pw} height={ph} preserveAspectRatio="none" opacity={0.4} />
+          )}
+          {showAutoDetect && autoDetectResult?.doors?.mask_b64 && (
+            <image href={`data:image/png;base64,${autoDetectResult.doors.mask_b64}`}
+              x="0" y="0" width={pw} height={ph} preserveAspectRatio="none" opacity={0.4} />
+          )}
+          {showAutoDetect && autoDetectResult?.windows?.mask_b64 && (
+            <image href={`data:image/png;base64,${autoDetectResult.windows.mask_b64}`}
+              x="0" y="0" width={pw} height={ph} preserveAspectRatio="none" opacity={0.4} />
+          )}
+
+          {/* ── Room overlays (segregation mode) ── */}
+          {mode === "segregation" && rooms.map((room) => (
+            <g key={room.id}>
+              <image
+                href={room.src?.startsWith("data:") ? room.src : `data:image/png;base64,${room.src}`}
+                x="0" y="0" width={pw} height={ph} preserveAspectRatio="none" />
+              <text x={room.center?.x || 0} y={room.center?.y || 0} textAnchor="middle"
+                dominantBaseline="middle" fontSize={14 / zoom} fontWeight="bold"
+                fill="#000" stroke="#fff" strokeWidth={0.8 / zoom} paintOrder="stroke">
+                {room.id} {room.class_name ? `(${room.class_name})` : ""} — {room.real_area?.toFixed(1) || room.pixel_area} m²
+              </text>
+            </g>
+          ))}
+
+          {/* ── Guides ── */}
+          {mode === "calibration" && calibLine.length === 4 && (
+            <line x1={calibLine[0]} y1={calibLine[1]} x2={calibLine[2]} y2={calibLine[3]}
+              stroke="#ff00ff" strokeWidth={2 / zoom} strokeDasharray={`${6/zoom} ${4/zoom}`} />
+          )}
+          {isDrawing && activeTool === "eraser" && eraserPath.length >= 4 && (
+            <polyline
+              points={Array.from({ length: Math.floor(eraserPath.length / 2) }, (_, i) =>
+                `${eraserPath[i*2]},${eraserPath[i*2+1]}`).join(" ")}
+              stroke="rgba(239,68,68,0.7)" strokeWidth={12 / zoom}
+              strokeLinecap="round" strokeLinejoin="round" fill="none" />
+          )}
+          {isDrawing && isLinearTool && openingLine.length === 4 && (
+            <line x1={openingLine[0]} y1={openingLine[1]} x2={openingLine[2]} y2={openingLine[3]}
+              stroke={selectedCategory === "Doors" ? "#16a34a" : "#ea580c"}
+              strokeWidth={3 / zoom} strokeDasharray={`${8/zoom} ${4/zoom}`} />
+          )}
+        </svg>
+
+        {loading && <div className="loading-overlay"><div className="loading-spinner" /></div>}
+      </div>{/* zoom-wrapper */}
+      </div>{/* sizer */}
+
+      {/* ── Zoom slider bar ── */}
+      <div className="zoom-bar">
+        <button className="zoom-btn" onClick={() => setZoom(z => Math.max(minZoom, z / 1.25))}>−</button>
+        <input
+          type="range"
+          className="zoom-slider"
+          min={minZoom * 100}
+          max={maxZoom * 100}
+          value={zoom * 100}
+          onChange={(e) => setZoom(parseFloat(e.target.value) / 100)}
+          step={1}
+        />
+        <button className="zoom-btn" onClick={() => setZoom(z => Math.min(maxZoom, z * 1.25))}>+</button>
+        <span className="zoom-label">{Math.round(zoom / fitZoom * 100)}%</span>
+        <button className="zoom-fit-btn" onClick={() => setZoom(fitZoom)}>Fit</button>
+      </div>
+      {autoDetectResult && showAutoDetect && mode !== "segregation" && (
+        <div className="auto-detect-bar">
+          <span>AI Detection Active</span>
+          <button onClick={() => setShowAutoDetect(false)}>Hide Overlay</button>
+          <button onClick={() => { setShowAutoDetect(false); if (setAutoDetectResult) setAutoDetectResult(null); }}>
+            Clear Detection
+          </button>
         </div>
-    );
+      )}
+      {autoDetectResult && !showAutoDetect && mode !== "segregation" && (
+        <div className="auto-detect-bar faded">
+          <span>AI Detection Hidden</span>
+          <button onClick={() => setShowAutoDetect(true)}>Show Overlay</button>
+        </div>
+      )}
+
+      {/* Polyline control bar */}
+      {mode === "drawing" && activeTool === "linear" && polyPoints.length > 0 && (
+        <div className="sam-controls"><div className="sam-controls-inner">
+          <span className="sam-hint">
+            {polyPoints.length} pts · Total: {polyLength() || "—"} · Enter=finish · Esc=cancel · Ctrl+Z=undo
+          </span>
+          <button className="sam-confirm-btn" onClick={finishPolyline}
+            disabled={polyPoints.length < 2}>✓ Finish</button>
+          <button className="sam-cancel-btn"
+            onClick={() => { setPolyPoints([]); setMousePos(null); }}>✕ Cancel</button>
+        </div></div>
+      )}
+
+      {/* AI Wand control bar */}
+      {mode === "drawing" && activeTool === "wand" && !isLinearTool && posPoints.length > 0 && (
+        <div className="sam-controls"><div className="sam-controls-inner">
+          <span className="sam-hint">
+            Click=more · Shift+click=exclude
+            {previewMask && ` · Score: ${(previewMask.sam_score * 100).toFixed(0)}%`}
+          </span>
+          <button className="sam-confirm-btn" onClick={confirmSelection}
+            disabled={!previewSvg?.length && !previewMask?.mask_b64}>✓ Confirm</button>
+          <button className="sam-cancel-btn" onClick={cancelSelection}>✕ Cancel</button>
+        </div></div>
+      )}
+    </div>
+  );
 };
 
 export default CanvasBoard;

@@ -16,6 +16,10 @@ locustfile.py
 backend/.env
 frontend/.env
 frontend/.env.*
+backend/cubicasa/
+   *.pkl
+   *.pth
+   *.pt
 
 # ========================
 # Backend (Python)

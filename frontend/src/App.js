@@ -1,167 +1,222 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import axios from "axios";
 import Sidebar from "./components/Sidebar";
 import CanvasBoard from "./components/CanvasBoard";
-import { AreaChart, CheckCircle2, LayoutDashboard, Download } from "lucide-react"; // Import Download Icon
+import { AreaChart, CheckCircle2, LayoutDashboard, Download } from "lucide-react";
 import "./App.css";
 
-const API_BASE = process.env.REACT_APP_API_URL || "http://localhost:8000";
+const API = process.env.REACT_APP_API_URL || "http://localhost:8000";
 
 function App() {
   const [projectId, setProjectId] = useState(null);
   const [projectData, setProjectData] = useState(null);
-  const [mode, setMode] = useState("calibration"); 
-  const [activeTool, setActiveTool] = useState("wand"); 
+  const [mode, setMode] = useState("calibration");
+  const [activeTool, setActiveTool] = useState("wand");
   const [selectedCategory, setSelectedCategory] = useState("Walls");
   const [masks, setMasks] = useState([]);
   const [rooms, setRooms] = useState([]);
+  const [autoDetectResult, setAutoDetectResult] = useState(null);
 
+  /* ─── upload ─────────────────────────────────────────────── */
   const handleFileUpload = async (file, pageIndex = 0) => {
-    const formData = new FormData();
-    formData.append("file", file);
+    const fd = new FormData();
+    fd.append("file", file);
     try {
-      const response = await axios.post(`${API_BASE}/upload?pdf_page=${pageIndex}`, formData, {
+      const res = await axios.post(`${API}/upload?pdf_page=${pageIndex}`, fd, {
         headers: { "Content-Type": "multipart/form-data" },
       });
-      setProjectId(response.data._id);
-      setProjectData(response.data);
-      setMasks(response.data.masks || []); 
-    } catch (error) {
-      console.error("Upload failed", error);
-      alert("Upload failed. If this is a large PDF, it might have timed out.");
+      setProjectId(res.data._id);
+      setProjectData(res.data);
+      setMasks(res.data.masks || []);
+      setRooms([]);
+      setMode("calibration");
+    } catch (err) {
+      console.error("Upload failed", err);
+      alert("Upload failed. Check console for details.");
     }
   };
 
+  /* ─── auto-save masks ────────────────────────────────────── */
   useEffect(() => {
     if (!projectId) return;
-    const saveData = async () => {
+    const t = setTimeout(async () => {
       try {
-        await axios.put(`${API_BASE}/project/${projectId}/state`,{ 
-          masks: masks,
+        await axios.put(`${API}/project/${projectId}/state`, {
+          masks,
           wall_height: projectData?.wall_height,
         });
       } catch (err) {
         console.error("Auto-save failed", err);
       }
-    };
-    const timeoutId = setTimeout(saveData, 1000);
-    return () => clearTimeout(timeoutId);
+    }, 1200);
+    return () => clearTimeout(t);
   }, [masks, projectData?.wall_height, projectId]);
-  
-  const handleUndo = () => setMasks((prev) => prev.slice(0, -1));
-  const handleClear = () => setMasks([]);
 
+  /* ─── add a new selection from backend ───────────────────── */
+  const addMask = useCallback((maskData) => {
+    setMasks((prev) => [...prev, maskData]);
+  }, []);
+
+  /* ─── update a mask in-place (for eraser) ────────────────── */
+  const updateMask = useCallback((index, newData) => {
+    setMasks((prev) => prev.map((m, i) => (i === index ? { ...m, ...newData } : m)));
+  }, []);
+
+  /* ─── undo / clear ───────────────────────────────────────── */
+  const handleUndo = () => setMasks((prev) => prev.slice(0, -1));
+  const handleClear = () => { setMasks([]); setRooms([]); setAutoDetectResult(null);};
+
+  /* ─── room segregation ───────────────────────────────────── */
   const handleSplitRooms = async () => {
     if (!projectId) return;
-    if (mode === 'segregation') {
-      setMode('drawing');
-      return;
-    }
+    if (mode === "segregation") { setMode("drawing"); return; }
     try {
-      await axios.put(`${API_BASE}/project/${projectId}/state`, { 
-        masks: masks,
+      await axios.put(`${API}/project/${projectId}/state`, {
+        masks,
         wall_height: projectData?.wall_height,
       });
-      const res = await axios.post(`${API_BASE}/project/${projectId}/segregate-rooms`);
+      const res = await axios.post(`${API}/project/${projectId}/segregate-rooms`);
       setRooms(res.data.rooms);
-      setMode('segregation');
+      setMode("segregation");
     } catch (err) {
       console.error("Segregation failed", err);
     }
   };
 
+  /* ─── measurements helpers ───────────────────────────────── */
   const getArea = (cat) => {
-    const catMasks = masks.filter(m => m.category === cat);
+    const catMasks = masks.filter((m) => m.category === cat);
+    const wh = parseFloat(projectData?.wall_height) || 0;
     if (cat === "Walls") {
-      const wallHeight = parseFloat(projectData?.wall_height) || 0;
-      const baseWallArea = catMasks.reduce((sum, m) => sum + ((m.real_length || 0) * wallHeight), 0);
-      const remainingArea = masks.filter(m => ['Doors', 'Windows'].includes(m.category)).reduce((sum, m) => {
-        const verticalDiff = Math.max(0, wallHeight - (m.height || 0));
-        return sum + ((m.real_length || 0) * verticalDiff);
-      }, 0);
-      return (baseWallArea + remainingArea).toFixed(2);
+      const base = catMasks.reduce((s, m) => s + (m.real_length || 0) * wh, 0);
+      const openings = masks
+        .filter((m) => ["Doors", "Windows"].includes(m.category))
+        .reduce((s, m) => s + (m.real_length || 0) * Math.max(0, wh - (m.height || 0)), 0);
+      return (base + openings).toFixed(2);
     }
-    if (['Windows', 'Doors'].includes(cat)) {
-       return catMasks.reduce((sum, m) => {
-        return sum + ((m.real_length || 0) * (m.height || 0));
-      }, 0).toFixed(2);
-    }
-    return 0;
+    return catMasks.reduce((s, m) => s + (m.real_length || 0) * (m.height || 0), 0).toFixed(2);
   };
 
   const getCeilingArea = () => {
-    if (!rooms || rooms.length === 0) return "0.00";
-    const total = rooms.reduce((sum, room) => sum + (room.real_area || 0), 0);
-    return total.toFixed(2);
+    if (!rooms.length) return "0.00";
+    return rooms.reduce((s, r) => s + (r.real_area || 0), 0).toFixed(2);
   };
 
   const getTotalNetWallArea = () => {
-    const wallHeight = parseFloat(projectData?.wall_height) || 0;
-    const totalGross = rooms.reduce((sum, room) => sum + ((room.real_perimeter || 0) * wallHeight), 0);
-    const totalOpenings = masks.filter(m => ['Doors', 'Windows'].includes(m.category))
-                               .reduce((sum, m) => sum + ((m.real_length || 0) * (m.height || 0)), 0);
-    return (totalGross - totalOpenings).toFixed(2);
+    const wh = parseFloat(projectData?.wall_height) || 0;
+    const gross = rooms.reduce((s, r) => s + (r.real_perimeter || 0) * wh, 0);
+    const openings = masks
+      .filter((m) => ["Doors", "Windows"].includes(m.category))
+      .reduce((s, m) => s + (m.real_length || 0) * (m.height || 0), 0);
+    return (gross - openings).toFixed(2);
   };
 
   const getNetRoomWallArea = (room) => {
-    const wallHeight = parseFloat(projectData?.wall_height) || 0;
-    const grossWallArea = (room.real_perimeter || 0) * wallHeight;
-    const totalOpeningsArea = masks.filter(m => ['Doors', 'Windows'].includes(m.category))
-                                   .reduce((sum, m) => sum + ((m.real_length || 0) * (m.height || 0)), 0);
-    const deductionPerRoom = totalOpeningsArea / (rooms.length || 1);
-    return (grossWallArea - deductionPerRoom).toFixed(2);
+    const wh = parseFloat(projectData?.wall_height) || 0;
+    const gross = (room.real_perimeter || 0) * wh;
+    const totalOpenings = masks
+      .filter((m) => ["Doors", "Windows"].includes(m.category))
+      .reduce((s, m) => s + (m.real_length || 0) * (m.height || 0), 0);
+    return (gross - totalOpenings / (rooms.length || 1)).toFixed(2);
   };
 
-  const getCount = (cat) => masks.filter(m => m.category === cat).length;
+  const getCount = (cat) => {
+    return masks
+      .filter((m) => m.category === cat)
+      .reduce((sum, m) => sum + (m.count || 1), 0);
+  };
 
-  // --- NEW EXPORT FUNCTION ---
+  /* ─── export ─────────────────────────────────────────────── */
   const handleExport = async () => {
-    if (!rooms || rooms.length === 0) {
-      alert("Please segregate rooms first before exporting.");
-      return;
-    }
-
-    // 1. Prepare Room Rows
-    const roomRows = rooms.map(room => ({
-      "Room No": room.id,
-      "Inner Wall Area (m²)": parseFloat(getNetRoomWallArea(room)),
-      "Ceiling Area (m²)": parseFloat(room.real_area ? room.real_area.toFixed(2) : 0),
-      "Inner Perimeter (m)": parseFloat(room.real_perimeter ? room.real_perimeter.toFixed(2) : 0)
+    if (!rooms.length) { alert("Please segregate rooms first."); return; }
+    const roomRows = rooms.map((r) => ({
+      "Room No": r.id,
+      "Inner Wall Area (m²)": parseFloat(getNetRoomWallArea(r)),
+      "Ceiling Area (m²)": parseFloat(r.real_area ? r.real_area.toFixed(2) : 0),
+      "Inner Perimeter (m)": parseFloat(r.real_perimeter ? r.real_perimeter.toFixed(2) : 0),
     }));
-
-    // 2. Prepare Summary Table
     const summaryData = {
       "Total Wall Area (m²)": parseFloat(getTotalNetWallArea()),
       "Total Ceiling Area (m²)": parseFloat(getCeilingArea()),
-      "Total Door Area (m²)": parseFloat(getArea('Doors')),
-      "Total Window Area (m²)": parseFloat(getArea('Windows'))
+      "Total Door Area (m²)": parseFloat(getArea("Doors")),
+      "Total Window Area (m²)": parseFloat(getArea("Windows")),
     };
-
     try {
-      const response = await axios.post(`${API_BASE}/project/export`, {
-        rooms: roomRows,
-        summary: summaryData
-      }, {
-        responseType: 'blob', // Important for file download
-      });
-
-      // Trigger Browser Download
-      const url = window.URL.createObjectURL(new Blob([response.data]));
-      const link = document.createElement('a');
-      link.href = url;
-      link.setAttribute('download', 'measurements.xlsx');
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
+      const res = await axios.post(`${API}/project/export`,
+        { rooms: roomRows, summary: summaryData },
+        { responseType: "blob" }
+      );
+      const url = window.URL.createObjectURL(new Blob([res.data]));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "measurements.xlsx";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
     } catch (err) {
       console.error("Export failed", err);
-      alert("Failed to export Excel file.");
     }
   };
 
+  /* ─── auto-detect complete ────────────────────────────────── */
+  const handleAutoDetectComplete = useCallback((data) => {
+    setAutoDetectResult(data);
+    
+    // 1. Add Wall Mask
+    if (data.walls?.real_length) {
+      addMask({
+        category: "Walls",
+        real_length: data.walls.real_length,
+        mask_b64: data.walls.mask_b64,
+        src: `data:image/png;base64,${data.walls.mask_b64}`,
+        height: 0,
+        auto_detected: true,
+        svg_groups: [],
+        edge_indices: [],
+      });
+    }
+
+    // 2. Add Door Mask
+    if (data.doors?.count > 0) {
+      addMask({
+        category: "Doors",
+        count: data.doors.count,
+        real_length: 0.9 * data.doors.count, // Standard door width estimate
+        mask_b64: data.doors.mask_b64,
+        src: `data:image/png;base64,${data.doors.mask_b64}`,
+        height: 2.1, // Standard door height
+        auto_detected: true,
+      });
+    }
+
+    // 3. Add Window Mask
+    if (data.windows?.count > 0) {
+      addMask({
+        category: "Windows",
+        count: data.windows.count,
+        real_length: 1.2 * data.windows.count, // Standard window width estimate
+        mask_b64: data.windows.mask_b64,
+        src: `data:image/png;base64,${data.windows.mask_b64}`,
+        height: 1.2, // Standard window height
+        auto_detected: true,
+      });
+    }
+
+    // 4. Add rooms
+    if (data.rooms?.length) {
+      setRooms(data.rooms.map((r) => ({
+        ...r,
+        src: r.mask_b64 ? `data:image/png;base64,${r.mask_b64}` : "",
+      })));
+    }
+    
+    setMode("drawing");
+  }, [addMask, setMode]);
+
+  /* ─── render ─────────────────────────────────────────────── */
   return (
     <div className="app-container">
-      <Sidebar 
+      <Sidebar
         onUpload={handleFileUpload}
         mode={mode}
         setMode={setMode}
@@ -172,89 +227,89 @@ function App() {
         handleUndo={handleUndo}
         handleClear={handleClear}
         hasProject={!!projectId}
-        projectData={projectData} 
+        projectData={projectData}
         setProjectData={setProjectData}
         onSplitRooms={handleSplitRooms}
+        projectId={projectId}
+        onAutoDetectComplete={handleAutoDetectComplete}
       />
 
       <main className="main-canvas-area">
         {projectData ? (
-          <CanvasBoard 
+          <CanvasBoard
             projectId={projectId}
             projectData={projectData}
             setProjectData={setProjectData}
             mode={mode}
+            setMode={setMode}
             activeTool={activeTool}
+            setActiveTool={setActiveTool}
             selectedCategory={selectedCategory}
             masks={masks}
-            setMasks={setMasks}
+            addMask={addMask}
+            updateMask={updateMask}
             rooms={rooms}
+            autoDetectResult={autoDetectResult}
+            setAutoDetectResult={setAutoDetectResult}
           />
         ) : (
-          <div className="empty-state"><p>Please upload a floor plan</p></div>
+          <div className="empty-state"><p>Upload a floor plan PDF to begin</p></div>
         )}
       </main>
 
       <aside className="right-panel">
-        <div className="panel-header flex justify-between items-center">
+        <div className="panel-header">
           <h2>
-            {mode === 'segregation' ? <LayoutDashboard size={18}/> : <AreaChart size={18}/>} 
-            {mode === 'segregation' ? " Room List" : " Area Report"}
+            {mode === "segregation" ? <LayoutDashboard size={18} /> : <AreaChart size={18} />}{" "}
+            {mode === "segregation" ? " Room List" : " Area Report"}
           </h2>
-          
-        <br></br>
-          {/* {mode === 'segregation' && ( */}
-             <button 
-                onClick={handleExport}
-                className="p-1 rounded hover:bg-gray-100 text-blue-600"
-                title="Export to Excel"
-             >
-                <Download size={18} />
-                Download Report
-             </button>
-          {/* )} */}
+          <button onClick={handleExport} className="export-btn" title="Export to Excel">
+            <Download size={16} /> Export
+          </button>
         </div>
-        
+
         <div className="stats-content">
-          {mode === 'segregation' ? (
-             <div className="flex flex-col gap-3">
-               <div className="stat-card mb-4" style={{ background: '#eff6ff', border: '1px solid #dbeafe' }}>
-                 <div className="stat-title">Total Net Wall Area</div>
-                 <div className="stat-value">{getTotalNetWallArea()} m²</div>
-               </div>
-               {rooms.map(room => (
-                   <div key={room.id} className="mini-stat flex justify-between items-center px-4" style={{borderColor: '#e2e8f0'}}>
-                     <div className="flex flex-col">
-                       <div className="flex items-center gap-2">
-                         <div style={{width:12, height:12, borderRadius:'50%', background: room.color}}></div>
-                         <span className="font-bold text-gray-700">{room.id}</span>
-                       </div>
-                       <span className="text-xs text-gray-500">Wall: {getNetRoomWallArea(room)} m²</span>
-                       <br></br>
-                       <span className="text-xs font-semibold text-blue-600">Perimeter: {room.real_perimeter ? room.real_perimeter.toFixed(2) : 0} m</span>
-                     </div>
-                     <strong className="text-lg">{room.real_area ? room.real_area.toFixed(2) : 0} m²</strong>
-                   </div>
-               ))}
-             </div>
+          {mode === "segregation" ? (
+            <div className="flex flex-col gap-3">
+              <div className="stat-card" style={{ background: "#eff6ff", border: "1px solid #dbeafe" }}>
+                <div className="stat-title">Total Net Wall Area</div>
+                <div className="stat-value">{getTotalNetWallArea()} m²</div>
+              </div>
+              {rooms.map((room) => (
+                <div key={room.id} className="mini-stat">
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <div style={{ width: 12, height: 12, borderRadius: "50%", background: room.color }} />
+                    <span style={{ fontWeight: 700 }}>{room.id}</span>
+                  </div>
+                  <div style={{ fontSize: 12, color: "#64748b", marginTop: 4 }}>
+                    Wall: {getNetRoomWallArea(room)} m² · P: {room.real_perimeter?.toFixed(2) || 0} m
+                  </div>
+                  <div style={{ fontSize: 18, fontWeight: 800, marginTop: 4 }}>
+                    {room.real_area?.toFixed(2) || 0} m²
+                  </div>
+                </div>
+              ))}
+            </div>
           ) : (
             <>
-              <div className="mb-4 text-sm font-semibold text-gray-600">Wall Height :- {projectData?.wall_height || 0} m</div>
-              <div className="stat-card walls mb-4 ring-2 ring-blue-500">
+              <div style={{ fontSize: 13, fontWeight: 600, color: "#64748b", marginBottom: 16 }}>
+                Wall Height: {projectData?.wall_height || 0} m
+              </div>
+              <div className="stat-card walls">
                 <div className="stat-title">Total Wall Area</div>
-                <div className="stat-value">{getArea('Walls')} m²</div>
+                <div className="stat-value">{getArea("Walls")} m²</div>
               </div>
-              <div className="stat-card mb-4" style={{ background: '#faf5ff', border: '1px solid #e9d5ff' }}>
-                <div className="stat-title" style={{color: '#9333ea'}}>Total Ceiling Area</div>
-                <div className="stat-value" style={{color: '#6b21a8'}}>{getCeilingArea()} m²</div>
+              <div className="stat-card" style={{ background: "#faf5ff", border: "1px solid #e9d5ff" }}>
+                <div className="stat-title" style={{ color: "#9333ea" }}>Total Ceiling Area</div>
+                <div className="stat-value" style={{ color: "#6b21a8" }}>{getCeilingArea()} m²</div>
               </div>
-              <div className="stat-card mb-4" style={{ background: '#f0fdf4', border: '1px solid #bbf7d0' }}>
-                <div className="stat-title">Doors Area (Count - {getCount('Doors')})</div>
-                <div className="stat-value">{getArea('Doors')} m²</div>
+              <div className="stat-card" style={{ background: "#f0fdf4", border: "1px solid #bbf7d0" }}>
+                <div className="stat-title">Doors ({getCount("Doors")})</div>
+                <div className="stat-value">{getArea("Doors")} m²</div>
               </div>
-              <div className="stat-card mb-4" style={{ background: '#fff7ed', border: '1px solid #fed7aa' }}>
-                <div className="stat-title">Windows Area (Count - {getCount('Windows')})</div>
-                <div className="stat-value">{getArea('Windows')} m²</div>
+              <div className="stat-card" style={{ background: "#fff7ed", border: "1px solid #fed7aa" }}>
+                <div className="stat-title">Windows ({getCount("Windows")})</div>
+                <div className="stat-value">{getArea("Windows")} m²</div>
               </div>
             </>
           )}
@@ -263,8 +318,13 @@ function App() {
         {projectData && (
           <div className="project-meta">
             <div className="meta-item">
-              <CheckCircle2 size={14} className={projectData.scale_factor ? "text-green-500" : "text-yellow-500"}/>
+              <CheckCircle2 size={14} className={projectData.scale_factor ? "text-green" : "text-yellow"} />
               <span>{projectData.scale_factor ? "Calibrated" : "Calibration Required"}</span>
+            </div>
+            <div className="meta-item" style={{ marginTop: 4 }}>
+              <span style={{ fontSize: 11, color: "#94a3b8" }}>
+                {projectData.edge_count?.toLocaleString()} vector edges indexed
+              </span>
             </div>
           </div>
         )}

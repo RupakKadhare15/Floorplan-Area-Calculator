@@ -21,3 +21,40 @@
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.env
+.venv/
+env/
+
+# Model weights (too large for git — download in Dockerfile)
+*.pkl
+*.pth
+*.pt
+*.onnx
+model_best_val_loss_var.pkl
+sam_vit_b_01ec64.pth
+sam2.1_hiera_*.pt
+
+# CubiCasa cloned repo (cloned in Dockerfile)
+backend/cubicasa/
+
+# Node
+node_modules/
+frontend/build/
+frontend/.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Test data
+test_data/

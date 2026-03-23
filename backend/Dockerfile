@@ -1,18 +1,20 @@
-FROM python:3.9-slim
-WORKDIR /code
+FROM python:3.11-slim
 
-# FIX: 'libgl1-mesa-glx' is deprecated. We use 'libgl1' instead.
-RUN apt-get update && apt-get install -y \
-    libgl1 \
-    libglib2.0-0 \
-    poppler-utils \
-    && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    poppler-utils libgl1-mesa-glx libglib2.0-0 git && \
+    rm -rf /var/lib/apt/lists/*
 
-# Copy requirements from the 'app' folder
+WORKDIR /app
+
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt && pip install --no-cache-dir gdown
 
-# Copy the 'app' folder contents to the container root
-COPY app/ .
+RUN git clone --depth 1 https://github.com/EmanuelKuhn/CubiCasa5k.git /app/cubicasa && \
+    gdown "1gRB7ez1e4H7a9Y09lLqRuna0luZO5VRK" -O /app/cubicasa/model_best_val_loss_var.pkl && \
+    sed -i 's/def init_weights(self):/def init_weights(self):\n        return/' \
+    /app/cubicasa/floortrans/models/hg_furukawa_original.py
 
-CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port 8000 --workers ${WEB_CONCURRENCY:-1}"]
+COPY app/ /app/app/
+
+EXPOSE 8000
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

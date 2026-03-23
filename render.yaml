@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: bygai-backend
+    runtime: docker
+    rootDir: backend
+    branch: test-deploy 
+    plan: standard
+    healthCheckPath: /docs
+    envVars:
+      - key: MONGO_URL
+        sync: false
+
+  - type: web
+    name: bygai-frontend
+    runtime: docker
+    rootDir: frontend
+    plan: starter
+    envVars:
+      - key: REACT_APP_API_URL
+        fromService:
+          name: bygai-backend
+          type: web
+          property: url
