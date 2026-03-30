@@ -47,6 +47,12 @@ const CanvasBoard = ({
   const [showAutoDetect, setShowAutoDetect] = useState(true);
 
   const isLinearTool = useMemo(
+    () => ["Doors", "Windows"].includes(selectedCategory) && activeTool === "line_draw",
+    [selectedCategory, activeTool]
+  );
+
+  // Door/window AI click mode
+  const isDoorWindowAI = useMemo(
     () => ["Doors", "Windows"].includes(selectedCategory) && activeTool === "wand",
     [selectedCategory, activeTool]
   );
@@ -179,8 +185,8 @@ const CanvasBoard = ({
 
     if (mode !== "drawing") return;
 
-    // AI Wand click
-    if (activeTool === "wand" && !isLinearTool) {
+    // AI Wand click (walls)
+    if (activeTool === "wand" && !isLinearTool && !isDoorWindowAI) {
       const pos = screenToNorm(e);
       if (e.shiftKey) {
         const n = [...negPoints, pos]; setNegPoints(n);
@@ -189,6 +195,37 @@ const CanvasBoard = ({
         const p = [...posPoints, pos]; setPosPoints(p);
         querySAM(p, negPoints, selectedMaskIdx);
       }
+      return;
+    }
+
+    // AI Click for doors/windows (CAD pattern detection)
+    if (isDoorWindowAI) {
+      const pos = screenToNorm(e);
+      setLoading(true);
+      try {
+        const endpoint = selectedCategory === "Doors" ? "click-door" : "click-window";
+        const res = await axios.post(`${API}/project/${projectId}/${endpoint}`, {
+          pos_points: [[pos.x, pos.y]],
+          category: selectedCategory,
+        });
+        if (res.data.found && res.data.svg_groups?.length) {
+          const h = selectedCategory === "Doors"
+            ? parseFloat(window.prompt("Door height (m):", "2.1")) || 2.1
+            : parseFloat(window.prompt("Window height (m):", "1.2")) || 1.2;
+          addMask({
+            svg_groups: res.data.svg_groups,
+            edge_indices: [],
+            real_length: res.data.real_length,
+            total_length_pts: res.data.total_length_pts,
+            category: selectedCategory,
+            height: h,
+            src: "",
+          });
+        } else {
+          console.log("No door/window found near click. Try Manual Draw.");
+        }
+      } catch (err) { console.error("Door/window click failed:", err); }
+      setLoading(false);
       return;
     }
 
@@ -282,9 +319,40 @@ const CanvasBoard = ({
     const sf = projectData?.scale_factor;
     const rl = sf ? totalPx / sf : null;
     const h = parseFloat(window.prompt(
-      `Length: ${rl ? rl.toFixed(2) + " m" : totalPx.toFixed(0) + " pts"}\nWall height (m):`,
-      projectData?.wall_height || "2.4"
+      `Length: ${rl ? rl.toFixed(2) + " m" : totalPx.toFixed(0) + " pts"}\n${selectedCategory === "Walls" ? "Wall" : selectedCategory.slice(0, -1)} height (m):`,
+      selectedCategory === "Doors" ? "2.1" : selectedCategory === "Windows" ? "1.2" : (projectData?.wall_height || "2.4")
     )) || 0;
+
+    // Generate raster mask_b64 so split rooms can use this polyline
+    const canvas = canvasRef.current;
+    let maskB64 = "";
+    if (canvas && polyPoints.length >= 2) {
+      const tmpCanvas = document.createElement("canvas");
+      tmpCanvas.width = canvas.width;
+      tmpCanvas.height = canvas.height;
+      const ctx = tmpCanvas.getContext("2d");
+      ctx.clearRect(0, 0, tmpCanvas.width, tmpCanvas.height);
+
+      // Draw polyline as thick semi-transparent stroke
+      const catColors = { Walls: "rgba(29,78,216,0.63)", Doors: "rgba(21,128,61,0.63)", Windows: "rgba(194,65,12,0.63)" };
+      ctx.strokeStyle = catColors[selectedCategory] || "rgba(100,100,255,0.63)";
+      ctx.lineWidth = 12;
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.beginPath();
+      const scale = canvas.width / (pageInfo?.width || 1);
+      polyPoints.forEach((p, i) => {
+        const px = p.x * scale;
+        const py = p.y * scale;
+        if (i === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      });
+      ctx.stroke();
+
+      // Export as base64 PNG
+      const dataUrl = tmpCanvas.toDataURL("image/png");
+      maskB64 = dataUrl.replace("data:image/png;base64,", "");
+    }
 
     const pts = polyPoints.map(p => `${p.x},${p.y}`).join(" ");
     addMask({
@@ -292,8 +360,10 @@ const CanvasBoard = ({
       real_length: rl,
       height: h,
       polyline_points: pts,
+      mask_b64: maskB64,
       manual: true,
-      src: "", svg_groups: [], edge_indices: [],
+      src: maskB64 ? `data:image/png;base64,${maskB64}` : "",
+      svg_groups: [], edge_indices: [],
     });
     setPolyPoints([]); setMousePos(null);
   };

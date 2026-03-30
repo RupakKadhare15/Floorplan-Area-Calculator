@@ -20,6 +20,7 @@ from pdf2image import convert_from_path
 from .pdf_vector_engine import VectorPDFEngine
 from .pdf_cleaner import PDFCleaner
 from .wall_tracer import WallTracer
+from .cad_detector import CADDetector
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +94,13 @@ class HybridEngine:
         logger.info(
             f"HybridEngine: {len(self.vector.edges)} edges, "
             f"SAM={'YES (' + sam_checkpoint + ')' if self.sam else 'NO'}"
+        )
+
+        # ── CAD Detector (doors/windows by geometric pattern) ──
+        self.cad = CADDetector(pdf_bytes, page_num)
+        logger.info(
+            f"CAD Detector: {len(self.cad.doors)} doors, "
+            f"{len(self.cad.windows)} windows"
         )
 
     def _render_image(self):
@@ -193,6 +201,34 @@ class HybridEngine:
                 selected.append(i)
 
         return selected
+
+    # ─────────────── DOOR/WINDOW SELECTION ──────────────
+
+    def select_door(self, click_x_pt, click_y_pt):
+        """Click near a door → returns SVG + measurement."""
+        result = self.cad.select_door(click_x_pt, click_y_pt)
+        if not result:
+            return None
+        return {
+            "svg_groups": result["svg_groups"],
+            "opening_width_pts": result["opening_width_pts"],
+            "edge_indices": [],
+            "edge_count": 0,
+            "total_length_pts": result["opening_width_pts"],
+        }
+
+    def select_window(self, click_x_pt, click_y_pt):
+        """Click near a window → returns SVG + measurement."""
+        result = self.cad.select_window(click_x_pt, click_y_pt)
+        if not result:
+            return None
+        return {
+            "svg_groups": result["svg_groups"],
+            "opening_width_pts": result["opening_width_pts"],
+            "edge_indices": [],
+            "edge_count": 0,
+            "total_length_pts": result["opening_width_pts"],
+        }
 
     # ─────────────── ERASE ───────────────────────────────
 

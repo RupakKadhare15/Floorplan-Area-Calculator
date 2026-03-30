@@ -135,37 +135,55 @@ def process_vector_wand(pdf_bytes, click_x_px, click_y_px, dpi, category, color)
                     if is_fill: cv2.fillPoly(clean_canvas, [pts.astype(np.int32)], 255)
                     else: cv2.polylines(clean_canvas, [pts.astype(np.int32)], True, 255, thick)
 
-    # 4. SECURE SELECTION
+    # 4. SECURE SELECTION — only grab the component at the click point
     mask = np.zeros((img_h, img_w), dtype=np.uint8)
     
-    if target_dna["type"] == "fill":
-        # Connect isolated fills
-        num_labels, labels = cv2.connectedComponents(clean_canvas, connectivity=8)
-        roi_labels = labels[max(0, y-10):min(img_h, y+10), max(0, x-10):min(img_w, x+10)]
-        valid_labels = roi_labels[roi_labels > 0]
-        if len(valid_labels) > 0:
-            target_label = np.bincount(valid_labels.flatten()).argmax()
-            mask[labels == target_label] = 255
+    # Connected-component analysis: only return the cluster touching the click
+    num_labels, labels = cv2.connectedComponents(clean_canvas, connectivity=8)
+    
+    # Find label at click point (search small radius)
+    target_label = 0
+    for r in range(0, 20):
+        for dy in range(-r, r + 1):
+            for dx in range(-r, r + 1):
+                if abs(dy) != r and abs(dx) != r and r > 0:
+                    continue
+                ny, nx = y + dy, x + dx
+                if 0 <= ny < img_h and 0 <= nx < img_w and labels[ny, nx] > 0:
+                    target_label = labels[ny, nx]
+                    break
+            if target_label > 0:
+                break
+        if target_label > 0:
+            break
+    
+    if target_label > 0:
+        mask[labels == target_label] = 255
     else:
-        # Unfilled walls. We try to flood fill the cavity first.
-        flood_mask = np.zeros((img_h + 2, img_w + 2), dtype=np.uint8)
-        
-        # Dilate slightly to seal small CAD corners
-        dilated_canvas = cv2.dilate(clean_canvas, np.ones((3,3), np.uint8), iterations=1)
-        cv2.floodFill(dilated_canvas, flood_mask, (x, y), 255, flags=4 | (255 << 8))
-        filled_area = flood_mask[1:-1, 1:-1]
-        
-        # Anti-Bleed constraint: If flood covers >15% of page, it leaked out a doorway
-        if cv2.countNonZero(filled_area) < (img_w * img_h * 0.15):
-            mask = filled_area
-        else:
-            # Fallback: Just grab the contiguous vector lines themselves
-            num_labels, labels = cv2.connectedComponents(clean_canvas, connectivity=8)
+        # Fallback: try flood fill for filled walls
+        if target_dna["type"] == "fill":
             roi_labels = labels[max(0, y-10):min(img_h, y+10), max(0, x-10):min(img_w, x+10)]
             valid_labels = roi_labels[roi_labels > 0]
             if len(valid_labels) > 0:
                 target_label = np.bincount(valid_labels.flatten()).argmax()
                 mask[labels == target_label] = 255
+        else:
+            # Stroke walls: flood fill the cavity between wall lines
+            flood_mask = np.zeros((img_h + 2, img_w + 2), dtype=np.uint8)
+            dilated_canvas = cv2.dilate(clean_canvas, np.ones((3,3), np.uint8), iterations=1)
+            cv2.floodFill(dilated_canvas, flood_mask, (x, y), 255, flags=4 | (255 << 8))
+            filled_area = flood_mask[1:-1, 1:-1]
+            
+            # Anti-bleed: if flood covers >10% of page, it leaked through a doorway
+            if cv2.countNonZero(filled_area) < (img_w * img_h * 0.10):
+                mask = filled_area
+            else:
+                # Last resort: grab just the clicked component
+                roi_labels = labels[max(0, y-10):min(img_h, y+10), max(0, x-10):min(img_w, x+10)]
+                valid_labels = roi_labels[roi_labels > 0]
+                if len(valid_labels) > 0:
+                    target_label = np.bincount(valid_labels.flatten()).argmax()
+                    mask[labels == target_label] = 255
 
     if cv2.countNonZero(mask) == 0: return None, 0, 0
 

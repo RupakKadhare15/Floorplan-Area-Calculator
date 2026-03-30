@@ -305,6 +305,68 @@ async def draw_opening(project_id: str, payload: LineToolModel):
 
 # ── Manual Polyline ─────────────────────────────────────────────
 
+# ── AI Door Click (CAD arc detection) ──────────────────────────
+
+@app.post("/project/{project_id}/click-door")
+async def click_door(project_id: str, payload: HybridSelectModel):
+    """Click near a door → auto-detect arc swing + frame."""
+    project = await project_collection.find_one({"_id": ObjectId(project_id)})
+    if not project:
+        raise HTTPException(404)
+
+    engine = _get_hybrid_engine(project_id, project)
+    if not engine:
+        raise HTTPException(500, "Engine not available")
+
+    click_x, click_y = payload.pos_points[0]
+    result = engine.select_door(click_x, click_y)
+
+    if not result:
+        return {"svg_groups": [], "real_length": 0, "category": "Doors", "found": False}
+
+    sf = project.get("scale_factor")
+    return {
+        "svg_groups": result["svg_groups"],
+        "edge_indices": [],
+        "edge_count": 0,
+        "total_length_pts": result["total_length_pts"],
+        "real_length": result["total_length_pts"] / sf if sf else None,
+        "category": "Doors",
+        "found": True,
+    }
+
+
+# ── AI Window Click (parallel line detection) ──────────────────
+
+@app.post("/project/{project_id}/click-window")
+async def click_window(project_id: str, payload: HybridSelectModel):
+    """Click near a window → auto-detect parallel glass lines."""
+    project = await project_collection.find_one({"_id": ObjectId(project_id)})
+    if not project:
+        raise HTTPException(404)
+
+    engine = _get_hybrid_engine(project_id, project)
+    if not engine:
+        raise HTTPException(500, "Engine not available")
+
+    click_x, click_y = payload.pos_points[0]
+    result = engine.select_window(click_x, click_y)
+
+    if not result:
+        return {"svg_groups": [], "real_length": 0, "category": "Windows", "found": False}
+
+    sf = project.get("scale_factor")
+    return {
+        "svg_groups": result["svg_groups"],
+        "edge_indices": [],
+        "edge_count": 0,
+        "total_length_pts": result["total_length_pts"],
+        "real_length": result["total_length_pts"] / sf if sf else None,
+        "category": "Windows",
+        "found": True,
+    }
+
+
 @app.post("/project/{project_id}/manual-polyline")
 async def manual_polyline(project_id: str, payload: ManualPolylineModel):
     """Compute length for a manually drawn polyline."""

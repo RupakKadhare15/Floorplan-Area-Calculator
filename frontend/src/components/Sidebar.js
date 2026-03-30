@@ -91,15 +91,17 @@ const Sidebar = ({
           </div>
         )}
 
-        {/* Selection Method toggle — only when drawing walls */}
-        {hasProject && mode === "drawing" && selectedCategory === "Walls" && (
+        {/* Selection Method toggle — all categories */}
+        {hasProject && mode === "drawing" && (
           <div>
             <label className="section-label">Selection Method</label>
             <div className="tool-toggle">
               <button
                 className={`tool-toggle-btn ${activeTool === "wand" ? "active" : ""}`}
                 onClick={() => setActiveTool("wand")}
-                title="AI-assisted click selection"
+                title={selectedCategory === "Walls"
+                  ? "AI-assisted wall selection"
+                  : `AI-assisted ${selectedCategory.toLowerCase()} detection (CAD pattern)`}
               >
                 <MousePointer size={14} /> AI Click
               </button>
@@ -113,8 +115,10 @@ const Sidebar = ({
             </div>
             <p className="hint-text" style={{ marginTop: 6 }}>
               {activeTool === "wand"
-                ? "Click wall → AI selects segment. Shift+click to exclude."
-                : "Click point-to-point along wall. Double-click or Enter to finish."}
+                ? selectedCategory === "Walls"
+                  ? "Click wall → AI selects segment. Shift+click to exclude."
+                  : `Click on ${selectedCategory.toLowerCase()} → AI detects ${selectedCategory === "Doors" ? "arc swing" : "parallel lines"}.`
+                : `Click point-to-point along ${selectedCategory.toLowerCase()}. Double-click or Enter to finish.`}
             </p>
           </div>
         )}
