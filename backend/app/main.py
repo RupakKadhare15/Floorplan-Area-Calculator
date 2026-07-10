@@ -43,7 +43,8 @@ from .models import (
     HybridSelectModel,
     ManualPolylineModel,
     ExportDataModel,
-    VectorEraseModel
+    VectorEraseModel,
+    RoomRenameModel,
 )
 from .vector_processing import (
     process_vector_wand,
@@ -130,6 +131,7 @@ async def upload_image(file: UploadFile = File(...), pdf_page: int = 0):
             "unit": "m",
             "masks": [],
             "wall_height": 2.4,
+            "rooms": [],
         }
         result = await project_collection.insert_one(project)
         project["_id"] = str(result.inserted_id)
@@ -480,7 +482,7 @@ async def auto_detect(project_id: str):
         traceback.print_exc()
         raise HTTPException(500, f"Auto-detection failed: {e}")
 
-# ── Room Segregation ────────────────────────────────────────────
+# ── Room Segregation (Vector-first hybrid) ─────────────────────
 
 @app.post("/project/{project_id}/segregate-rooms")
 async def segregate_rooms(project_id: str):
@@ -488,48 +490,144 @@ async def segregate_rooms(project_id: str):
     if not project:
         raise HTTPException(404)
 
-    image_data = base64.b64decode(project["image_data"])
-    wall_masks = []
-    opening_masks = []
+    engine = _get_hybrid_engine(project_id, project)
+    sf = project.get("scale_factor")
+
+    # ── Classify masks into barrier types ──
+    wall_idx_lists = []
+    open_idx_lists = []
+    polyline_barriers = []
+    raster_barriers = []
 
     for m in project.get("masks", []):
-        # ── FIX BUG 3: Handle ALL mask formats ──
-        # Format A: src="data:image/png;base64,..." (magic-wand)
-        # Format B: mask_b64="..." (hybrid-select / auto-detect)
-        # Format C: polyline_points (manual draw — no raster, skip)
-        mask_bytes = None
-        
+        cat = m.get("category", "Walls")
+        edge_indices = m.get("edge_indices", [])
+        polyline_pts = m.get("polyline_points", "")
+        mask_b64 = m.get("mask_b64", "")
         src = m.get("src", "")
-        if src:
-            b64_clean = src.replace("data:image/png;base64,", "")
+
+        # Priority 1: Vector edges (highest accuracy)
+        if edge_indices and len(edge_indices) > 0:
+            if cat == "Walls":
+                wall_idx_lists.append(edge_indices)
+            else:
+                open_idx_lists.append(edge_indices)
+
+        # Priority 2: Manual polyline points (exact click coordinates)
+        elif polyline_pts:
             try:
-                mask_bytes = base64.b64decode(b64_clean)
-            except Exception:
+                pairs = polyline_pts.strip().split(" ")
+                points = []
+                for pair in pairs:
+                    parts = pair.split(",")
+                    if len(parts) == 2:
+                        points.append([float(parts[0]), float(parts[1])])
+                if len(points) >= 2:
+                    polyline_barriers.append({"points": points, "category": cat})
+            except (ValueError, IndexError):
                 pass
-        
-        if mask_bytes is None and m.get("mask_b64"):
-            try:
-                mask_bytes = base64.b64decode(m["mask_b64"])
-            except Exception:
-                pass
-        
-        if mask_bytes is None:
-            continue
 
-        if m.get("category") == "Walls":
-            wall_masks.append(mask_bytes)
-        elif m.get("category") in ("Doors", "Windows"):
-            opening_masks.append(mask_bytes)
+        # Priority 3: Raster masks (fallback — auto-detect, magic-wand)
+        else:
+            b64_data = None
+            if mask_b64:
+                b64_data = mask_b64
+            elif src and "base64," in src:
+                b64_data = src.split("base64,", 1)[1]
+            if b64_data:
+                raster_barriers.append({"mask_b64": b64_data})
 
-    rooms = perform_room_segmentation(image_data, wall_masks, opening_masks)
+    # ── Route to the best engine ──
+    if engine and (wall_idx_lists or polyline_barriers):
+        # Vector-first hybrid segregation (highest accuracy)
+        logger.info(
+            f"Segregation: VECTOR mode — "
+            f"{len(wall_idx_lists)} edge lists, "
+            f"{len(polyline_barriers)} polylines, "
+            f"{len(raster_barriers)} raster masks"
+        )
+        rooms = engine.vector.segregate_rooms(
+            wall_idx_lists=wall_idx_lists,
+            open_idx_lists=open_idx_lists,
+            polyline_barriers=polyline_barriers,
+            raster_barriers=raster_barriers,
+            scale_factor=sf,
+        )
+    else:
+        # Fallback to pure raster segregation
+        logger.info("Segregation: RASTER fallback mode")
+        image_data = base64.b64decode(project["image_data"])
+        wall_masks = []
+        opening_masks = []
 
-    sf = project.get("scale_factor")
-    if sf:
+        for m in project.get("masks", []):
+            mask_bytes = None
+            s = m.get("src", "")
+            if s:
+                b64_clean = s.replace("data:image/png;base64,", "")
+                try:
+                    mask_bytes = base64.b64decode(b64_clean)
+                except Exception:
+                    pass
+            if mask_bytes is None and m.get("mask_b64"):
+                try:
+                    mask_bytes = base64.b64decode(m["mask_b64"])
+                except Exception:
+                    pass
+            if mask_bytes is None:
+                continue
+            if m.get("category") == "Walls":
+                wall_masks.append(mask_bytes)
+            elif m.get("category") in ("Doors", "Windows"):
+                opening_masks.append(mask_bytes)
+
+        rooms = perform_room_segmentation(image_data, wall_masks, opening_masks)
+        if sf:
+            for r in rooms:
+                r["real_area"] = r["pixel_area"] / (sf ** 2)
+                r["real_perimeter"] = r.get("pixel_perimeter", 0) / sf
+
+        # Add defaults for raster-mode rooms
         for r in rooms:
-            r["real_area"] = r["pixel_area"] / (sf ** 2)
-            r["real_perimeter"] = r.get("pixel_perimeter", 0) / sf
+            if "name" not in r:
+                r["name"] = r.get("id", "Room")
+            if "wall_count" not in r:
+                r["wall_count"] = 4
+
+    # ── Persist rooms to DB ──
+    await project_collection.update_one(
+        {"_id": ObjectId(project_id)},
+        {"$set": {"rooms": rooms}},
+    )
 
     return {"rooms": rooms}
+
+
+# ── Room Rename ────────────────────────────────────────────────
+
+@app.put("/project/{project_id}/rename-room")
+async def rename_room(project_id: str, payload: RoomRenameModel):
+    """Rename a room. Updates the persisted room list."""
+    project = await project_collection.find_one({"_id": ObjectId(project_id)})
+    if not project:
+        raise HTTPException(404)
+
+    rooms = project.get("rooms", [])
+    found = False
+    for room in rooms:
+        if room.get("id") == payload.room_id:
+            room["name"] = payload.new_name
+            found = True
+            break
+
+    if not found:
+        raise HTTPException(404, f"Room {payload.room_id} not found")
+
+    await project_collection.update_one(
+        {"_id": ObjectId(project_id)},
+        {"$set": {"rooms": rooms}},
+    )
+    return {"status": "success", "room_id": payload.room_id, "name": payload.new_name}
 
 # ── Excel Export ────────────────────────────────────────────────
 

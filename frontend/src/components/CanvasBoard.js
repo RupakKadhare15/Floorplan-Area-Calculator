@@ -552,18 +552,37 @@ const CanvasBoard = ({
           )}
 
           {/* ── Room overlays (segregation mode) ── */}
-          {mode === "segregation" && rooms.map((room) => (
-            <g key={room.id}>
-              <image
-                href={room.src?.startsWith("data:") ? room.src : `data:image/png;base64,${room.src}`}
-                x="0" y="0" width={pw} height={ph} preserveAspectRatio="none" />
-              <text x={room.center?.x || 0} y={room.center?.y || 0} textAnchor="middle"
-                dominantBaseline="middle" fontSize={14 / zoom} fontWeight="bold"
-                fill="#000" stroke="#fff" strokeWidth={0.8 / zoom} paintOrder="stroke">
-                {room.id} {room.class_name ? `(${room.class_name})` : ""} — {room.real_area?.toFixed(1) || room.pixel_area} m²
-              </text>
-            </g>
-          ))}
+          {mode === "segregation" && rooms.map((room) => {
+            const cx = room.center?.x || 0;
+            const cy = room.center?.y || 0;
+            const fs = 12 / zoom;
+            const fsSmall = 9 / zoom;
+            const lineH = fs * 1.4;
+            const displayName = room.name || room.id;
+            const wallInfo = room.wall_count ? `${room.wall_count} walls` : "";
+            const areaInfo = `${room.real_area?.toFixed(1) || room.pixel_area} m²`;
+            const pillW = Math.max(displayName.length, areaInfo.length) * fs * 0.65 + 16 / zoom;
+            const pillH = lineH * 3 + 8 / zoom;
+            return (
+              <g key={room.id}>
+                <image
+                  href={room.src?.startsWith("data:") ? room.src : `data:image/png;base64,${room.src}`}
+                  x="0" y="0" width={pw} height={ph} preserveAspectRatio="none" />
+                <rect x={cx - pillW / 2} y={cy - pillH / 2}
+                  width={pillW} height={pillH}
+                  rx={4 / zoom} fill="rgba(0,0,0,0.72)" />
+                <text x={cx} y={cy - lineH * 0.8} textAnchor="middle"
+                  dominantBaseline="middle" fontSize={fs} fontWeight="bold"
+                  fill="white">{displayName}</text>
+                <text x={cx} y={cy + lineH * 0.05} textAnchor="middle"
+                  dominantBaseline="middle" fontSize={fsSmall}
+                  fill="rgba(255,255,255,0.7)">{room.id}{wallInfo ? ` · ${wallInfo}` : ""}</text>
+                <text x={cx} y={cy + lineH * 0.95} textAnchor="middle"
+                  dominantBaseline="middle" fontSize={fs} fontWeight="bold"
+                  fill="#60a5fa">{areaInfo}</text>
+              </g>
+            );
+          })}
 
           {/* ── Guides ── */}
           {mode === "calibration" && calibLine.length === 4 && (

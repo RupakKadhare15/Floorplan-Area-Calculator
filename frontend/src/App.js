@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from "react";
 import axios from "axios";
 import Sidebar from "./components/Sidebar";
 import CanvasBoard from "./components/CanvasBoard";
-import { AreaChart, CheckCircle2, LayoutDashboard, Download } from "lucide-react";
+import { AreaChart, CheckCircle2, LayoutDashboard, Download, Pencil, Check, X } from "lucide-react";
 import "./App.css";
 
 const API = process.env.REACT_APP_API_URL || "http://localhost:8000";
@@ -16,6 +16,10 @@ function App() {
   const [masks, setMasks] = useState([]);
   const [rooms, setRooms] = useState([]);
   const [autoDetectResult, setAutoDetectResult] = useState(null);
+
+  // Room rename state
+  const [editingRoomId, setEditingRoomId] = useState(null);
+  const [editingRoomName, setEditingRoomName] = useState("");
 
   /* ─── upload ─────────────────────────────────────────────── */
   const handleFileUpload = async (file, pageIndex = 0) => {
@@ -84,6 +88,41 @@ function App() {
   };
 
   /* ─── measurements helpers ───────────────────────────────── */
+
+  /* ─── room rename ────────────────────────────────────────── */
+  const startRenameRoom = (room) => {
+    setEditingRoomId(room.id);
+    setEditingRoomName(room.name || room.id);
+  };
+
+  const confirmRenameRoom = async () => {
+    if (!editingRoomId || !editingRoomName.trim()) return;
+    try {
+      await axios.put(`${API}/project/${projectId}/rename-room`, {
+        room_id: editingRoomId,
+        new_name: editingRoomName.trim(),
+      });
+      setRooms((prev) =>
+        prev.map((r) =>
+          r.id === editingRoomId ? { ...r, name: editingRoomName.trim() } : r
+        )
+      );
+    } catch (err) {
+      console.error("Rename failed", err);
+    }
+    setEditingRoomId(null);
+    setEditingRoomName("");
+  };
+
+  const cancelRenameRoom = () => {
+    setEditingRoomId(null);
+    setEditingRoomName("");
+  };
+
+  const handleRenameKeyDown = (e) => {
+    if (e.key === "Enter") confirmRenameRoom();
+    else if (e.key === "Escape") cancelRenameRoom();
+  };
   const getArea = (cat) => {
     const catMasks = masks.filter((m) => m.category === cat);
     const wh = parseFloat(projectData?.wall_height) || 0;
@@ -131,6 +170,8 @@ function App() {
     if (!rooms.length) { alert("Please segregate rooms first."); return; }
     const roomRows = rooms.map((r) => ({
       "Room No": r.id,
+      "Room Name": r.name || r.id,
+      "Wall Count": r.wall_count || "—",
       "Inner Wall Area (m²)": parseFloat(getNetRoomWallArea(r)),
       "Ceiling Area (m²)": parseFloat(r.real_area ? r.real_area.toFixed(2) : 0),
       "Inner Perimeter (m)": parseFloat(r.real_perimeter ? r.real_perimeter.toFixed(2) : 0),
@@ -140,6 +181,9 @@ function App() {
       "Total Ceiling Area (m²)": parseFloat(getCeilingArea()),
       "Total Door Area (m²)": parseFloat(getArea("Doors")),
       "Total Window Area (m²)": parseFloat(getArea("Windows")),
+      "Total Rooms": rooms.length,
+      "Total Doors": getCount("Doors"),
+      "Total Windows": getCount("Windows"),
     };
     try {
       const res = await axios.post(`${API}/project/export`,
@@ -276,16 +320,48 @@ function App() {
                 <div className="stat-value">{getTotalNetWallArea()} m²</div>
               </div>
               {rooms.map((room) => (
-                <div key={room.id} className="mini-stat">
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <div style={{ width: 12, height: 12, borderRadius: "50%", background: room.color }} />
-                    <span style={{ fontWeight: 700 }}>{room.id}</span>
+                <div key={room.id} className="room-card">
+                  <div className="room-card-header">
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, flex: 1 }}>
+                      <div className="room-color-dot" style={{ background: room.color }} />
+                      {editingRoomId === room.id ? (
+                        <div className="room-rename-row">
+                          <input className="room-rename-input" value={editingRoomName}
+                            onChange={(e) => setEditingRoomName(e.target.value)}
+                            onKeyDown={handleRenameKeyDown} autoFocus />
+                          <button className="room-rename-action confirm"
+                            onClick={confirmRenameRoom} title="Save"><Check size={14} /></button>
+                          <button className="room-rename-action cancel"
+                            onClick={cancelRenameRoom} title="Cancel"><X size={14} /></button>
+                        </div>
+                      ) : (
+                        <div className="room-name-row">
+                          <span className="room-name">{room.name || room.id}</span>
+                          <span className="room-id-badge">{room.id}</span>
+                          <button className="room-rename-btn"
+                            onClick={() => startRenameRoom(room)} title="Rename room">
+                            <Pencil size={12} />
+                          </button>
+                        </div>
+                      )}
+                    </div>
                   </div>
-                  <div style={{ fontSize: 12, color: "#64748b", marginTop: 4 }}>
-                    Wall: {getNetRoomWallArea(room)} m² · P: {room.real_perimeter?.toFixed(2) || 0} m
-                  </div>
-                  <div style={{ fontSize: 18, fontWeight: 800, marginTop: 4 }}>
-                    {room.real_area?.toFixed(2) || 0} m²
+                  <div className="room-card-body">
+                    <div className="room-metric-row">
+                      <span className="room-metric-label">Walls</span>
+                      <span className="room-metric-value">{room.wall_count || "—"} sides</span>
+                    </div>
+                    <div className="room-metric-row">
+                      <span className="room-metric-label">Wall Area</span>
+                      <span className="room-metric-value">{getNetRoomWallArea(room)} m²</span>
+                    </div>
+                    <div className="room-metric-row">
+                      <span className="room-metric-label">Perimeter</span>
+                      <span className="room-metric-value">{room.real_perimeter?.toFixed(2) || 0} m</span>
+                    </div>
+                    <div className="room-area-highlight">
+                      {room.real_area?.toFixed(2) || 0} m²
+                    </div>
                   </div>
                 </div>
               ))}

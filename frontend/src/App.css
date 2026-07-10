@@ -504,3 +504,161 @@ body { font-family: 'Inter', -apple-system, sans-serif; color: var(--text); back
   transition: all 0.15s;
 }
 .zoom-fit-btn:hover { background: #475569; color: white; }
+
+/* ═══════ ROOM CARDS (segregation panel) ═══════ */
+
+.room-card {
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  overflow: hidden;
+  background: white;
+  transition: box-shadow 0.15s;
+}
+.room-card:hover {
+  box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+}
+
+.room-card-header {
+  display: flex;
+  align-items: center;
+  padding: 10px 14px;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.room-color-dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  border: 2px solid rgba(0,0,0,0.1);
+}
+
+.room-name-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+
+.room-name {
+  font-weight: 700;
+  font-size: 13px;
+  color: #1e293b;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.room-id-badge {
+  font-size: 10px;
+  font-weight: 600;
+  color: #94a3b8;
+  background: #f1f5f9;
+  padding: 1px 6px;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.room-rename-btn {
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: #94a3b8;
+  cursor: pointer;
+  border-radius: 4px;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: all 0.15s;
+}
+.room-card-header:hover .room-rename-btn {
+  opacity: 1;
+}
+.room-rename-btn:hover {
+  background: #f1f5f9;
+  color: #64748b;
+}
+
+.room-rename-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+}
+
+.room-rename-input {
+  flex: 1;
+  padding: 4px 8px;
+  border: 1.5px solid #3b82f6;
+  border-radius: 5px;
+  font-size: 13px;
+  font-weight: 600;
+  outline: none;
+  min-width: 0;
+}
+.room-rename-input:focus {
+  box-shadow: 0 0 0 3px rgba(59,130,246,0.15);
+}
+
+.room-rename-action {
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.room-rename-action.confirm {
+  background: #dcfce7;
+  color: #16a34a;
+}
+.room-rename-action.confirm:hover {
+  background: #bbf7d0;
+}
+.room-rename-action.cancel {
+  background: #fee2e2;
+  color: #dc2626;
+}
+.room-rename-action.cancel:hover {
+  background: #fecaca;
+}
+
+.room-card-body {
+  padding: 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.room-metric-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.room-metric-label {
+  font-size: 11px;
+  color: #94a3b8;
+  font-weight: 500;
+}
+
+.room-metric-value {
+  font-size: 12px;
+  color: #475569;
+  font-weight: 600;
+}
+
+.room-area-highlight {
+  font-size: 20px;
+  font-weight: 800;
+  color: #1e293b;
+  margin-top: 4px;
+  text-align: right;
+}

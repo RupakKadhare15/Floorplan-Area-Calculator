@@ -54,3 +54,9 @@ class ExportDataModel(BaseModel):
     rooms: List[dict]
     summary: dict
 
+
+class RoomRenameModel(BaseModel):
+    """Rename a room after segregation."""
+    room_id: str          # e.g. "R1"
+    new_name: str         # e.g. "Kitchen" or "Stue"
+

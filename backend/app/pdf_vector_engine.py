@@ -16,13 +16,17 @@ Coordinate system: all public methods use normalised coords where
 import pdfplumber
 import pikepdf
 import math
+import re
 import io
 import cv2
 import numpy as np
 import random
 import base64
+import logging
 from PIL import Image
 from collections import defaultdict, deque
+
+logger = logging.getLogger(__name__)
 
 # ─────────────────────────── constants ──────────────────────────────
 
@@ -30,6 +34,31 @@ _AXIS_TOL_DEG = 10          # degrees from 0/90 to count as axis-aligned
 _MIN_STRUCT_LENGTH = 12.0   # pts — shorter lines are decorative
 _HATCH_MAX_LENGTH = 20.0    # pts — diagonal lines shorter than this = hatch
 _HATCH_ANGLE_RANGE = (20, 70)  # degrees from horizontal to be "diagonal"
+
+# Room label patterns (EN + DA + common abbreviations)
+_ROOM_LABEL_PATTERNS = [
+    r"(?i)\b(stue|køkken|soveværelse|badeværelse|entré|entre|bryggers|"
+    r"toilet|wc|kontor|gang|værelse|kammer|repos|altan|terrasse|"
+    r"garderobe|vaskerum|hobbyrum|gæsteværelse|spisestue|"
+    r"teknik\w*|depot|kælder|loft)\b",
+    r"(?i)\b(kitchen|living\s*room|bedroom|bathroom|hallway|hall|"
+    r"corridor|office|study|closet|storage|garage|utility|"
+    r"laundry|dining\s*room|balcony|terrace|entrance|foyer|"
+    r"master\s*bed\w*|guest\s*room|pantry|wc|en-?suite)\b",
+    r"(?i)\b(room\s*\d+|rum\s*\d+|r\d{1,3})\b",
+]
+
+
+def _is_dimension_text(text):
+    """Check if text looks like a dimension value (number, unit, etc.)."""
+    t = text.strip()
+    if re.match(r'^[\d.,]+\s*(mm|cm|m|"|\'|ft|in)?$', t):
+        return True
+    if re.match(r'^[\d.,]+$', t) and len(t) <= 8:
+        return True
+    if t.upper() in ('A', 'B', 'C', 'D', 'N', 'S', 'E', 'W', '+', '-', '±'):
+        return True
+    return False
 
 # ─────────────────────────── helpers ────────────────────────────────
 
@@ -436,7 +465,81 @@ class VectorPDFEngine:
 
     # ──────────── room segregation ──────────────────
 
-    def segregate_rooms(self, wall_idx_lists, open_idx_lists, scale_factor=None):
+    def extract_room_labels(self):
+        """
+        Extract text from the PDF page and identify room labels.
+        Returns list of { text, x, y, is_room_label } in normalised coords.
+        """
+        labels = []
+        raw_words = self.pp_page.extract_words(
+            keep_blank_chars=False, x_tolerance=3, y_tolerance=3,
+        )
+
+        # Group nearby words into phrases
+        sorted_words = sorted(raw_words, key=lambda w: (
+            round(float(w['top']) / 5) * 5, float(w['x0'])
+        ))
+        phrases = []
+        current = None
+        for word in sorted_words:
+            wx0, wy0 = float(word['x0']), float(word['top'])
+            wx1, wy1 = float(word['x1']), float(word['bottom'])
+            text = word.get('text', '').strip()
+            if not text:
+                continue
+            if current is None:
+                current = {'text': text, 'x0': wx0, 'y0': wy0, 'x1': wx1, 'y1': wy1}
+            else:
+                same_line = abs(wy0 - current['y0']) < 5
+                close_h = (wx0 - current['x1']) < 12
+                if same_line and close_h:
+                    current['text'] += ' ' + text
+                    current['x1'] = wx1
+                    current['y1'] = max(current['y1'], wy1)
+                else:
+                    phrases.append(current)
+                    current = {'text': text, 'x0': wx0, 'y0': wy0, 'x1': wx1, 'y1': wy1}
+        if current:
+            phrases.append(current)
+
+        for phrase in phrases:
+            text = phrase['text']
+            cx = (phrase['x0'] + phrase['x1']) / 2
+            cy = (phrase['y0'] + phrase['y1']) / 2
+            nx, ny = self._norm(cx, cy)
+            if nx < 0 or ny < 0 or nx > self.page_width or ny > self.page_height:
+                continue
+            if _is_dimension_text(text):
+                continue
+            is_room_label = False
+            for pattern in _ROOM_LABEL_PATTERNS:
+                if re.search(pattern, text):
+                    is_room_label = True
+                    break
+            if not is_room_label and len(text) >= 3:
+                words = text.split()
+                if all(w[0].isupper() for w in words if len(w) > 1):
+                    if not re.match(r'^[\d.,\s]+$', text):
+                        is_room_label = True
+            labels.append({"text": text, "x": nx, "y": ny, "is_room_label": is_room_label})
+        return labels
+
+    def segregate_rooms(self, wall_idx_lists, open_idx_lists,
+                        polyline_barriers=None, raster_barriers=None,
+                        scale_factor=None):
+        """
+        Industry-grade room segregation with hybrid barrier support.
+
+        Args:
+            wall_idx_lists:    list of lists of edge indices (from hybrid-select)
+            open_idx_lists:    list of lists of edge indices for doors/windows
+            polyline_barriers: list of dicts with 'points' ([[x,y],...] in PDF pts)
+            raster_barriers:   list of dicts with 'mask_b64' (base64 PNG)
+            scale_factor:      pixels-per-real-unit from calibration
+
+        Returns:
+            list of room dicts with id, name, wall_count, area, perimeter, etc.
+        """
         res_scale = min(3000, max(1500, int(max(self.page_width, self.page_height) * 1.2)))
         sx = res_scale / self.page_width
         sy = (res_scale * self.page_height / self.page_width) / self.page_height
@@ -446,6 +549,7 @@ class VectorPDFEngine:
 
         barrier = np.zeros((h_img, w_img), dtype=np.uint8)
 
+        # ── 1. Draw vector edge barriers ──
         def _draw(lists):
             for idx_list in lists:
                 for idx in idx_list:
@@ -460,15 +564,57 @@ class VectorPDFEngine:
         _draw(wall_idx_lists)
         _draw(open_idx_lists)
 
+        # ── 2. Draw polyline barriers (Manual Draw) ──
+        if polyline_barriers:
+            for poly in polyline_barriers:
+                pts = poly.get("points", [])
+                if len(pts) < 2:
+                    continue
+                for i in range(len(pts) - 1):
+                    p0 = (int(float(pts[i][0]) * sr), int(float(pts[i][1]) * sr))
+                    p1 = (int(float(pts[i + 1][0]) * sr), int(float(pts[i + 1][1]) * sr))
+                    cv2.line(barrier, p0, p1, 255, max(3, int(2 * sr)))
+
+        # ── 3. Draw raster mask barriers (auto-detect fallback) ──
+        if raster_barriers:
+            for rm in raster_barriers:
+                try:
+                    mask_bytes = base64.b64decode(rm["mask_b64"])
+                    nparr = np.frombuffer(mask_bytes, np.uint8)
+                    mask_img = cv2.imdecode(nparr, cv2.IMREAD_UNCHANGED)
+                    if mask_img is None:
+                        continue
+                    if len(mask_img.shape) == 3 and mask_img.shape[2] == 4:
+                        mask_gray = mask_img[:, :, 3]
+                    elif len(mask_img.shape) == 3:
+                        mask_gray = cv2.cvtColor(mask_img, cv2.COLOR_BGR2GRAY)
+                    else:
+                        mask_gray = mask_img
+                    mask_resized = cv2.resize(mask_gray, (w_img, h_img),
+                                              interpolation=cv2.INTER_NEAREST)
+                    _, mask_bin = cv2.threshold(mask_resized, 10, 255, cv2.THRESH_BINARY)
+                    barrier = cv2.bitwise_or(barrier, mask_bin)
+                except Exception:
+                    continue
+
+        # ── 4. Morphological close + find rooms ──
         k = max(3, int(3 * sr / 1.5))
-        if k % 2 == 0: k += 1
+        if k % 2 == 0:
+            k += 1
         kernel = np.ones((k, k), np.uint8)
         closed = cv2.dilate(barrier, kernel, iterations=2)
         room_space = cv2.bitwise_not(closed)
 
         n_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(room_space, 4)
-        bg_id = np.argsort(stats[:, cv2.CC_STAT_AREA])[-1]
+        bg_id = int(np.argsort(stats[:, cv2.CC_STAT_AREA])[-1])
         min_area = w_img * h_img * 0.0005
+
+        # ── 5. Extract room labels from PDF text ──
+        try:
+            all_labels = self.extract_room_labels()
+            room_label_candidates = [l for l in all_labels if l["is_room_label"]]
+        except Exception:
+            room_label_candidates = []
 
         rooms = []
         rn = 1
@@ -482,8 +628,12 @@ class VectorPDFEngine:
             if not cnts:
                 continue
             cnt = cnts[0]
-            eps = 0.002 * cv2.arcLength(cnt, True)
+
+            # Polygon approximation — 0.5% of perimeter preserves real corners
+            perimeter_len = cv2.arcLength(cnt, True)
+            eps = 0.005 * perimeter_len
             approx = cv2.approxPolyDP(cnt, eps, True)
+
             pa = cv2.contourArea(approx)
             pp = cv2.arcLength(approx, True)
             pt_area = pa / (sr ** 2)
@@ -491,6 +641,45 @@ class VectorPDFEngine:
             ra = pt_area / (scale_factor ** 2) if scale_factor else None
             rp = pt_perim / scale_factor if scale_factor else None
 
+            # ── Wall count: vertices of simplified polygon ──
+            wall_count = len(approx)
+            # Filter out noise segments shorter than 5% of average
+            if wall_count > 3:
+                seg_lengths = []
+                for si in range(wall_count):
+                    p_a = approx[si][0]
+                    p_b = approx[(si + 1) % wall_count][0]
+                    seg_lengths.append(math.hypot(p_b[0] - p_a[0], p_b[1] - p_a[1]))
+                avg_seg = sum(seg_lengths) / len(seg_lengths)
+                wall_count = max(3, sum(1 for sl in seg_lengths if sl >= avg_seg * 0.05))
+
+            # ── Room centroid ──
+            cx_pt = float(centroids[i][0]) / sr
+            cy_pt = float(centroids[i][1]) / sr
+
+            # ── Match room name from PDF text ──
+            room_name = None
+            best_dist = float('inf')
+            for label in room_label_candidates:
+                lx_px = int(label["x"] * sr)
+                ly_px = int(label["y"] * sr)
+                if 0 <= ly_px < h_img and 0 <= lx_px < w_img and blob[ly_px, lx_px] > 0:
+                    dist = math.hypot(label["x"] - cx_pt, label["y"] - cy_pt)
+                    if dist < best_dist:
+                        best_dist = dist
+                        room_name = label["text"]
+            # Fallback: nearest label within 5% of page
+            if room_name is None:
+                search_r = max(self.page_width, self.page_height) * 0.05
+                for label in room_label_candidates:
+                    dist = math.hypot(label["x"] - cx_pt, label["y"] - cy_pt)
+                    if dist < search_r and dist < best_dist:
+                        best_dist = dist
+                        room_name = label["text"]
+            if room_name is None:
+                room_name = f"Room {rn}"
+
+            # ── Generate room mask ──
             color = (random.randint(100, 255), random.randint(100, 255), random.randint(100, 255))
             r, g, b = color
             rgba = np.zeros((h_img, w_img, 4), np.uint8)
@@ -502,14 +691,29 @@ class VectorPDFEngine:
             b64 = base64.b64encode(buf.getvalue()).decode()
 
             rooms.append({
-                "id": f"R{rn}", "src": b64,
+                "id": f"R{rn}",
+                "name": room_name,
+                "wall_count": wall_count,
+                "src": b64,
                 "pixel_area": pt_area, "pixel_perimeter": pt_perim,
                 "real_area": ra, "real_perimeter": rp,
-                "center": {"x": float(centroids[i][0]) / sr, "y": float(centroids[i][1]) / sr},
+                "center": {"x": cx_pt, "y": cy_pt},
                 "color": f"rgb({r},{g},{b})",
                 "img_width": w_img, "img_height": h_img,
             })
             rn += 1
+
+        # Deduplicate room names
+        name_counts = defaultdict(int)
+        for room in rooms:
+            name_counts[room["name"]] += 1
+        name_seen = defaultdict(int)
+        for room in rooms:
+            n = room["name"]
+            if name_counts[n] > 1:
+                name_seen[n] += 1
+                room["name"] = f"{n} {name_seen[n]}"
+
         return rooms
 
     # ──────────── info ──────────────────────────────
